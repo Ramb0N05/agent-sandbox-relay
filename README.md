@@ -1,12 +1,15 @@
 # agent-sandbox-relay
 
-Job-Queue-Service (Docker-Service-Name: agent-sandboy-relay) fuer die
+Job-Queue-Service (Docker-Service-Name: agent-sandbox-relay) fuer die
 vibe-sandbox-VM. Referenz-Doku: Canvas "vibe-sandbox-vm", Abschnitt 10.5
 (Transportoption E: Pull-Agent mit Job-Queue auf dem Hetzner-Server).
 
 Der Service fuehrt selbst keine Befehle aus. Er nimmt Jobs entgegen und
 liefert sie an den authentifizierten Pull-Agent in der VM aus; die
 Ausfuehrung passiert ausschliesslich in der VM.
+
+Branches: main = Server-Seite (dieser Service), worker = VM-Seite
+(cloud-init, Pull-Agent, systemd-Units, virt-install, Ziel-XML).
 
 ## API-Vertrag (alle Endpunkte: Bearer-Token im Authorization-Header, TLS via Traefik)
 
@@ -18,7 +21,7 @@ Ausfuehrung passiert ausschliesslich in der VM.
 
 ## Environment
 
-- AGENT_SANDBOY_RELAY_TOKEN: Bearer-Token, Pflicht. Ohne Token startet der
+- AGENT_SANDBOX_RELAY_TOKEN: Bearer-Token, Pflicht. Ohne Token startet der
   Prozess nicht (fail-closed, SystemExit).
 
 ## Build
@@ -31,11 +34,11 @@ die Git-URL selbst:
 
 Rebuild mit aktuellem Repo-Stand:
 
-    docker compose up -d --build agent-sandboy-relay
+    docker compose up -d --build agent-sandbox-relay
 
 Komplett ohne Layer-Cache:
 
-    docker compose build --no-cache agent-sandboy-relay
+    docker compose build --no-cache agent-sandbox-relay
 
 ## Haertung
 

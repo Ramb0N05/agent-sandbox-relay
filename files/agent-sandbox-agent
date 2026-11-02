@@ -5,7 +5,7 @@
 set -u
 TOKEN="<agent-sandbox-relay-token>"
 ENDPOINT="https://<agent-sandbox-relay-domain>"
-OUTMAX=4194304
+OUTMAX=8388608
 CMAX=900
 while true; do
   resp=$(curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" "$ENDPOINT/jobs/next" 2>/dev/null || true)
@@ -13,7 +13,29 @@ while true; do
     id=$(jq -r '.id // empty' <<< "$resp")
     cmd=$(jq -r '.cmd // empty' <<< "$resp")
     if [ -n "$id" ] && [ -n "$cmd" ]; then
-      out=$(timeout $CMAX bash -lc "$cmd" 2>&1); rc=$?
+      case "$cmd" in
+        "VIBE_FETCH "*)
+          read -r tag fid target <<< "$cmd"
+          timeout $CMAX curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" -o "$target" "$ENDPOINT/files/$fid"
+          rc=$?
+          out="VIBE_FETCH id=$fid target=$target rc=$rc"
+          ;;
+        "VIBE_SEND "*)
+          read -r tag path <<< "$cmd"
+          sresp=$(timeout $CMAX curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" --data-binary @"$path" "$ENDPOINT/files" 2>&1)
+          rc=$?
+          newid=$(printf '%s' "$sresp" | jq -r '.id // empty' 2>/dev/null)
+          if [ -n "$newid" ]; then
+            out="VIBE_SEND id=$newid size=$(printf '%s' "$sresp" | jq -r '.size // empty')"
+          else
+            out="VIBE_SEND fehlgeschlagen rc=$rc $(printf '%s' "$sresp" | head -c 200)"
+            rc=1
+          fi
+          ;;
+        *)
+          out=$(timeout $CMAX bash -lc "$cmd" 2>&1); rc=$?
+          ;;
+      esac
       printf '%s' "$out" | head -c $OUTMAX > /tmp/agent-sandbox-out
       jq -n --arg id "$id" --arg rc "$rc" --rawfile out /tmp/agent-sandbox-out \
         '{id:$id, rc:($rc|tonumber), output:$out}' \

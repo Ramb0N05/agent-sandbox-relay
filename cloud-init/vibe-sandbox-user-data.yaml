@@ -1,0 +1,82 @@
+#cloud-config
+users:
+  - name: vibe
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+packages:
+  - git
+  - curl
+  - jq
+  - ttyd
+  - lrzsz
+write_files:
+  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/usr/bin/agetty --noreset --noclear --autologin vibe --keep-baud 115200,57600,38400,9600 - $TERM
+  - path: /usr/local/bin/agent-sandbox-agent
+    owner: vibe:vibe
+    permissions: '0700'
+    content: |
+      #!/usr/bin/env bash
+      # Transportoption E: Pull-Agent gegen die Job-Queue (Docker-Service agent-sandbox-relay) auf dem Hetzner-Server (Abschnitt 10.5)
+      set -u
+      TOKEN="<agent-sandbox-relay-token>"
+      ENDPOINT="https://<agent-sandbox-relay-domain>"
+      OUTMAX=4194304
+      CMAX=900
+      while true; do
+        resp=$(curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" "$ENDPOINT/jobs/next" 2>/dev/null || true)
+        if [ -n "$resp" ]; then
+          id=$(jq -r '.id // empty' <<< "$resp")
+          cmd=$(jq -r '.cmd // empty' <<< "$resp")
+          if [ -n "$id" ] && [ -n "$cmd" ]; then
+            out=$(timeout $CMAX bash -lc "$cmd" 2>&1); rc=$?
+            printf '%s' "$out" | head -c $OUTMAX > /tmp/agent-sandbox-out
+            jq -n --arg id "$id" --arg rc "$rc" --rawfile out /tmp/agent-sandbox-out \
+              '{id:$id, rc:($rc|tonumber), output:$out}' \
+            | curl -sS --max-time 60 -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" --data-binary @- \
+                "$ENDPOINT/jobs/$id/result" >/dev/null || true
+            rm -f /tmp/agent-sandbox-out
+          fi
+        fi
+        sleep 1
+      done
+  - path: /etc/systemd/system/agent-sandbox-agent.service
+    content: |
+      [Unit]
+      Description=agent-sandbox pull agent gegen die Job-Queue (Transportoption E)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User=vibe
+      ExecStart=/usr/local/bin/agent-sandbox-agent
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/ttyd-vibe.service
+    content: |
+      [Unit]
+      Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)
+      After=network.target
+
+      [Service]
+      User=vibe
+      ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -c vibe:<ttyd-passwort> -m 2 -w /home/vibe bash -l
+      Restart=on-failure
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - systemctl disable --now sshd
+  - growpart /dev/vda 1
+  - resize2fs /dev/vda1
+  - systemctl daemon-reload
+  - systemctl enable --now agent-sandbox-agent.service
+  - systemctl enable --now ttyd-vibe.service
+  - systemctl restart serial-getty@ttyS0.service

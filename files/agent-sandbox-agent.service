@@ -1,0 +1,13 @@
+[Unit]
+Description=agent-sandbox pull agent gegen die Job-Queue (Transportoption E)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=vibe
+ExecStart=/usr/local/bin/agent-sandbox-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

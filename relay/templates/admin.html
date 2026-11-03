@@ -24,19 +24,19 @@ h3{margin-bottom:.2rem}
   <p>Login (Nutzername <code id="uhint">admin</code>):</p>
   <input id="user" placeholder="Nutzername" value="admin">
   <input type="password" id="pw" placeholder="Passwort">
-  <button onclick="doLogin()">Login</button>
+  <button id="btn-login">Login</button>
   <span id="loginmsg" class="muted"></span>
 </div>
 <div id="app" hidden>
   <p class="muted" id="mode"></p>
-  <button onclick="refresh()">Aktualisieren</button>
-  <button onclick="logout()">Logout</button>
+  <button id="btn-refresh">Aktualisieren</button>
+  <button id="btn-logout">Logout</button>
   <h2>Workers (VM-Agenten)</h2>
   <table id="wtab"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
-  <p>Neu: <input id="wname" placeholder="Name (optional, z.B. vm1)"> <button onclick="addWorker()">Worker anlegen</button></p>
+  <p>Neu: <input id="wname" placeholder="Name (optional, z.B. vm1)"> <button id="btn-addw">Worker anlegen</button></p>
   <h2>Submitters (Absender, je einem Worker zugeordnet)</h2>
   <table id="stab"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Umziehen</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
-  <p>Neu: <input id="sname" placeholder="Name (optional, z.B. vibe)"> Worker: <select id="sworker"></select> <button onclick="addSubmitter()">Submitter anlegen</button></p>
+  <p>Neu: <input id="sname" placeholder="Name (optional, z.B. vibe)"> Worker: <select id="sworker"></select> <button id="btn-adds">Submitter anlegen</button></p>
   <h2>Jobs je Submitter</h2>
   <div id="jobs"></div>
   <h2>Speicher</h2>
@@ -92,11 +92,11 @@ async function refresh(){
     var opts = d.workers.map(function(w){ return "<option value='" + esc(w.id) + "'" + (w.id === s.worker_id ? " selected" : "") + ">" + esc(w.name) + "</option>"; }).join("");
     st.insertAdjacentHTML("beforeend", "<tr><td>" + esc(s.name) + (s.legacy ? " (legacy)" : "") + "</td><td>" + esc(s.id) + "</td><td>" + esc(s.worker_name) + "</td><td>" + esc(s.created) + "</td><td><select id='as-" + esc(s.id) + "'>" + opts + "</select> <button data-id='" + esc(s.id) + "' class='ass'>speichern</button></td><td><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button></td><td><button data-id='" + esc(s.id) + "' class='dels'>loeschen</button></td></tr>");
   });
-  Array.prototype.forEach.call(document.querySelectorAll(".delw"), function(b){ b.onclick = function(){ del(b.dataset.id, "worker"); }; });
-  Array.prototype.forEach.call(document.querySelectorAll(".dels"), function(b){ b.onclick = function(){ del(b.dataset.id, "submitter"); }; });
-  Array.prototype.forEach.call(document.querySelectorAll(".ass"), function(b){ b.onclick = function(){ assign(b.dataset.id); }; });
-  Array.prototype.forEach.call(document.querySelectorAll(".renw"), function(b){ b.onclick = function(){ rename(b.dataset.id, b.dataset.name); }; });
-  Array.prototype.forEach.call(document.querySelectorAll(".rens"), function(b){ b.onclick = function(){ rename(b.dataset.id, b.dataset.name); }; });
+  Array.prototype.forEach.call(document.querySelectorAll(".delw"), function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "worker"); }); });
+  Array.prototype.forEach.call(document.querySelectorAll(".dels"), function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "submitter"); }); });
+  Array.prototype.forEach.call(document.querySelectorAll(".ass"), function(b){ b.addEventListener("click", function(){ assign(b.dataset.id); }); });
+  Array.prototype.forEach.call(document.querySelectorAll(".renw"), function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
+  Array.prototype.forEach.call(document.querySelectorAll(".rens"), function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
   await refreshJobs();
   var stt = await api("/admin/api/state");
   document.getElementById("state").textContent = "Budget belegt: " + stt.data_bytes + " / " + stt.budget + " Bytes | Jobs: " + stt.jobs + " | Dateien: " + stt.files + " | erledigte Jobs je Submitter angezeigt: " + stt.exec_jobs_je_submitter;
@@ -127,9 +127,9 @@ async function refreshJobs(){
     else if (st === "running"){ td.innerHTML = "<button class='del'>loeschen</button>"; }
     else { td.innerHTML = "<button class='del'>loeschen</button>"; }
     var b;
-    if ((b = td.querySelector(".pau"))){ b.onclick = function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }; }
-    if ((b = td.querySelector(".res"))){ b.onclick = function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }; }
-    if ((b = td.querySelector(".del"))){ b.onclick = function(){ if (confirm("Job loeschen?")){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }; }
+    if ((b = td.querySelector(".pau"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }); }
+    if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
+    if ((b = td.querySelector(".del"))){ b.addEventListener("click", function(){ if (confirm("Job loeschen?")){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
   });
 }
 async function addWorker(){
@@ -165,6 +165,11 @@ async function del(tid, role){
   refresh();
 }
 if (PW){ doLogin(); }
+document.getElementById("btn-login").addEventListener("click", doLogin);
+document.getElementById("btn-refresh").addEventListener("click", refresh);
+document.getElementById("btn-logout").addEventListener("click", logout);
+document.getElementById("btn-addw").addEventListener("click", addWorker);
+document.getElementById("btn-adds").addEventListener("click", addSubmitter);
 </script>
 </body>
 </html>

@@ -17,7 +17,9 @@ Paket relay/: config.py (Env, Budget-Syntax), store.py (Zustand,
 Persistenz, Audit, OOM-Eviction), auth.py (Rollen-Tokens, Admin-Login mit
 Lockout), jobs.py (Job-Endpunkte inkl. /usage), files.py (Datei-Endpunkte),
 admin.py (Verwaltung) mit relay/templates/admin.html (Admin-UI als
-HTML-Template, CSP mit frischem Nonce je Aufruf).
+HTML-Template, CSP mit frischem Nonce je Aufruf; alle Buttons binden
+per addEventListener im nonce-gesicherten Script - Inline-Event-Handler
+wie onclick= blockiert die CSP, Nonce/Hashes gelten nicht dafuer).
 
 Branches: main = Server-Seite (dieser Service), worker = VM-Seite
 (cloud-init, Pull-Agent, systemd-Units, virt-install, Ziel-XML; enthaelt
@@ -182,6 +184,10 @@ z. B. GET /healthz und /docs -> 404).
   Nonce je Aufruf, style-src 'unsafe-inline', connect-src 'self',
   base-uri/frame-ancestors 'none'), Cache-Control no-store,
   X-Content-Type-Options nosniff, Referrer-Policy no-referrer.
+  Keine Inline-Event-Handler im Markup: Nonces und Hashes befreien nur
+  script-Elemente, nicht on*-Attribute; statische und dynamische
+  Buttons binden deshalb per addEventListener im nonce-gesicherten
+  Script.
 - Pydantic erzwingt cmd als String mit max_length=10000 (Verstoss -> 422)
   und die Token-Felder (Rolle nur worker|submitter, Name 1-64 Zeichen).
 - Verwaiste Long-Polls nehmen keine Jobs mehr an: GET /jobs/next prueft

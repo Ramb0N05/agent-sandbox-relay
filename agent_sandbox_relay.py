@@ -1,7 +1,7 @@
 # agent_sandbox_relay.py - minimale Job-Queue + Datei-Transport (Transportoption E), In-Memory
 # Quelle: https://github.com/Ramb0N05/agent-sandbox-relay (Branch main)
 # Ausfuehrung: uvicorn agent_sandbox_relay:app (siehe Dockerfile); Docker-Service heisst agent-sandbox-relay
-import asyncio, base64, gzip, os, time, uuid
+import asyncio, base64, gzip, os, secrets, time, uuid
 from collections import OrderedDict
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -12,7 +12,8 @@ FILEMAX = 8 * 1024 * 1024  # Roh-Groesse pro Datei im Datei-Store (Abschnitt 10.
 FILESTOREMAX = 64  # Eintraege im Datei-Store (FIFO, aelteste zuerst raus)
 if not TOKEN:
     raise SystemExit("AGENT_SANDBOX_RELAY_TOKEN ist nicht gesetzt")  # fail-closed
-app = FastAPI()
+# keine oeffentliche API-Doku: /docs, /redoc, /openapi.json antworten 404 (Nutzerentscheidung 03.11.2026)
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 jobs: "OrderedDict[str, dict]" = OrderedDict()
 files: "OrderedDict[str, dict]" = OrderedDict()
 ev = asyncio.Event()
@@ -21,7 +22,9 @@ class Job(BaseModel):
     cmd: str = Field(max_length=10000)  # Laengenlimit; Verstoss -> 422
 
 def check(authorization):
-    if authorization != f"Bearer {TOKEN}":
+    # constant-time Vergleich statt == (Timing-Seitenkanal, secrets.compare_digest);
+    # compare_digest akzeptiert nur ASCII-Strings, nicht-ASCII-Header vorher mit 401 ablehnen
+    if not authorization or not authorization.isascii() or not secrets.compare_digest(authorization, f"Bearer {TOKEN}"):
         raise HTTPException(status_code=401)
 
 @app.get("/healthz")
@@ -78,15 +81,17 @@ def _take_queued():
     return None
 
 @app.get("/jobs/next")
-async def next_job(authorization: str | None = Header(None)):
+async def next_job(request: Request, authorization: str | None = Header(None)):
     check(authorization)
+    ev.clear()  # erst zuruecksetzen, dann ziehen: kein verlorenes Aufwachen, falls ein Job zwischen beiden Schritten eintrifft
     j = _take_queued()
     if j:
         return {"id": j["id"], "cmd": j["cmd"]}
-    ev.clear()
     try:
         await asyncio.wait_for(ev.wait(), timeout=300)
     except asyncio.TimeoutError:
+        return Response(status_code=204)
+    if await request.is_disconnected():  # verwaister Long-Poll: toter Client zieht keinen Job aus der Queue
         return Response(status_code=204)
     j = _take_queued()
     if j:

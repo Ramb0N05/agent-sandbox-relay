@@ -22,12 +22,13 @@ keine Dateien aus main).
 - POST /jobs/<id>/result mit {"output": "...", "rc": 0} (VM-Agent)
 - GET /jobs/<id> -> Status/Output (Absender)
 - POST /files mit Datei-Rohbytes -> {"id": "...", "size": ..., "size_enc": ...} (Absender oder VM-Agent)
-- GET /files/<id> -> Datei-Rohbytes als application/octet-stream (Absender oder VM-Agent)
+- GET /files/<id> -> Datei-Rohbytes (Absender oder VM-Agent)
 - GET /usage -> Dokumentation/Verwendung der API als JSON (Absender)
 - GET /healthz -> {"ok": true} (Healthcheck, ohne Token)
 
-FastAPI stellt zusaetzlich automatisch Swagger UI unter /docs und das
-OpenAPI-Schema unter /openapi.json bereit.
+Die automatischen Doku-Oberflaechen sind abgeschaltet (docs_url=None,
+redoc_url=None, openapi_url=None): /docs, /redoc und /openapi.json
+antworten 404. Die API-Doku liefert GET /usage (token-geschuetzt).
 
 ## Environment
 
@@ -56,7 +57,16 @@ Komplett ohne Layer-Cache:
   gespeichert und an authentifizierte Aufrufer ausgeliefert. Dateien
   speichert der Server gzip-komprimiert und base64-kodiert (Python-stdlib
   gzip/base64, keine Shell-Aufrufe).
+- Token-Pruefung mit secrets.compare_digest (constant-time Vergleich gegen
+  Timing-Seitenkanaele); nicht-ASCII-Header werden vorher mit 401
+  abgelehnt, weil compare_digest nur ASCII-Strings akzeptiert.
 - Pydantic erzwingt cmd als String mit max_length=10000 (Verstoss -> 422).
+- Verwaiste Long-Polls nehmen keine Jobs mehr an: GET /jobs/next prueft
+  nach dem Aufwachen request.is_disconnected (Starlette) und laesst den
+  Job in der Queue, wenn der Client weg ist. Ausserdem setzt der Handler
+  das Ereignis erst vor dem Ziehen zurueck - ein Job, der zwischen Ziehen
+  und Zuruecksetzen eintrifft, wird nicht mehr verlorenerweise
+  verschlafen.
 - Result-Output wird serverseitig auf 8 MiB gedeckelt, der Job-Store auf
   500 Eintraege, der Datei-Store auf 64 Eintraege (In-Memory, aelteste
   zuerst raus); Datei-Rohbytes sind auf 8 MiB begrenzt (413 Content Too

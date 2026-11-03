@@ -17,7 +17,7 @@ _locks: dict = {}  # peer -> [fehlversuche, gesperrt_bis_unix]
 
 
 async def admin_fail_delay():
-    # Brute-Force bremsen; fuer Stub-Tests austauschbar
+    # Brute-Force bremsen; für Stub-Tests austauschbar
     await asyncio.sleep(0.5)
 
 
@@ -44,7 +44,7 @@ def _token_hash(authorization):
 
 
 def auth_bearer(request, authorization, kind):
-    # kind: "worker" (VM-Agent) oder "submitter" (Absender); Token wird nur als Hash geprueft
+    # kind: "worker" (VM-Agent) oder "submitter" (Absender); Token wird nur als Hash geprüft
     if not authorization or not authorization.isascii() or not authorization.startswith("Bearer "):
         _auth_fail(request)
     h = _token_hash(authorization)
@@ -55,7 +55,7 @@ def auth_bearer(request, authorization, kind):
 
 
 def auth_any(request, authorization):
-    # beide Rollen (Datei-Endpunkte, /usage); Rueckgabe: (Record, Rollenname)
+    # beide Rollen (Datei-Endpunkte, /usage); Rückgabe: (Record, Rollenname)
     if not authorization or not authorization.isascii() or not authorization.startswith("Bearer "):
         _auth_fail(request)
     h = _token_hash(authorization)
@@ -112,10 +112,10 @@ async def require_admin(request, credentials):
         await admin_fail_delay()
         store.audit("admin_auth_fail", peer=peer, xff=xff, modus=mode)
         # 401 bewusst ohne WWW-Authenticate-Challenge: Der legitime Client (Admin-UI)
-        # meldet sich proaktiv per Authorization-Header an; eine Basic-Challenge loest
+        # meldet sich proaktiv per Authorization-Header an; eine Basic-Challenge löst
         # in Browsern den nativen Login-Dialog aus, auch bei fetch, bevor das
         # JavaScript der UI die 401 sieht (Airbyte Issue 78177; SO 86105/9859627;
         # RFC 7235 formuliert die Challenge nur als SHOULD).
         raise HTTPException(status_code=401)
-    _locks.pop(peer, None)  # erfolgreicher Login setzt Zaehler und Sperre zurueck
+    _locks.pop(peer, None)  # erfolgreicher Login setzt Zähler und Sperre zurück
     return mode

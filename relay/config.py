@@ -2,20 +2,20 @@
 import os
 
 TOKEN = os.environ.get("AGENT_SANDBOX_RELAY_TOKEN", "")  # Legacy-Token: Migration bei leerem Token-Speicher
-ADMIN_PASSWORD = os.environ.get("AGENT_SANDBOX_ADMIN_PASSWORD", "")  # Login der Verwaltung; ungesetzt -> Bootstrap ueber Legacy-Token
+ADMIN_PASSWORD = os.environ.get("AGENT_SANDBOX_ADMIN_PASSWORD", "")  # Login der Verwaltung; ungesetzt -> Bootstrap über Legacy-Token
 ADMIN_USERNAME = os.environ.get("AGENT_SANDBOX_ADMIN_USERNAME", "admin")
 OUTMAX = 8 * 1024 * 1024  # Result-Output-Deckel 8 MiB (Nutzerentscheidung 11/2026, Abschnitt 10.7)
-FILEMAX = 8 * 1024 * 1024  # Roh-Groesse pro Datei im Datei-Store (Abschnitt 10.8)
-FILESTOREMAX = 64  # Eintraege im Datei-Store (FIFO, aelteste zuerst raus)
-AUDITMAX = 2 * 1024 * 1024  # Audit-Log-Rotation: ab dieser Groesse auf .1 umdrehen
-JOBSTOREMAX = 500  # Eintraege im Job-Store (aelteste zuerst raus)
+FILEMAX = 8 * 1024 * 1024  # Roh-Größe pro Datei im Datei-Store (Abschnitt 10.8)
+FILESTOREMAX = 64  # Einträge im Datei-Store (FIFO, älteste zuerst raus)
+AUDITMAX = 2 * 1024 * 1024  # Audit-Log-Rotation: ab dieser Größe auf .1 umdrehen
+JOBSTOREMAX = 500  # Einträge im Job-Store (älteste zuerst raus)
 DEFAULT_BUDGET = "256m"
 
 _UNITS = {"b": 1, "k": 1024, "kb": 1024, "m": 1024 * 1024, "mb": 1024 * 1024,
           "g": 1024 * 1024 * 1024, "gb": 1024 * 1024 * 1024}
 
 # Laufzeit-Overrides aus DATA_DIR/settings.json (sechzehnte Runde): Werte, die die
-# Verwaltungsoberflaeche zur Laufzeit aendert. Env bleibt Fallback, settings.json gewinnt.
+# Verwaltungsoberfläche zur Laufzeit ändert. Env bleibt Fallback, settings.json gewinnt.
 # Betroffen: budget(), exec_jobs_shown() - alles andere bleibt Start-Umwelt.
 _overrides: dict = {}
 
@@ -58,18 +58,18 @@ def data_dir():
 
 
 def budget():
-    # Speicherbudget fuer Output- plus Datei-Encoding-Bytes; ungueltige Angabe: Start-Abbruch
+    # Speicherbudget für Output- plus Datei-Encoding-Bytes; ungültige Angabe: Start-Abbruch
     if "budget" in _overrides:  # Einstellungsseite: Override aus settings.json (bereits geparst)
         return _overrides["budget"]
     raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", DEFAULT_BUDGET)
     try:
         return parse_size(raw)
     except ValueError as e:
-        raise SystemExit("AGENT_SANDBOX_RELAY_BUDGET ungueltig: %r (%s). Syntax wie mem_limit im Compose-File: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)" % (raw, e))
+        raise SystemExit("AGENT_SANDBOX_RELAY_BUDGET ungültig: %r (%s). Syntax wie mem_limit im Compose-File: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)" % (raw, e))
 
 
 def poll_seconds():
-    # Long-Poll-Dauer von /jobs/next (Env nur fuer Tests verkuerzbar)
+    # Long-Poll-Dauer von /jobs/next (Env nur für Tests verkürzbar)
     try:
         return max(0, int(os.environ.get("AGENT_SANDBOX_RELAY_POLL", "300")))
     except ValueError:
@@ -84,3 +84,47 @@ def exec_jobs_shown():
         return max(1, int(os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")))
     except ValueError:
         return 64
+
+
+# Speichergrenze des Containers (docker mem_limit), siebzwehnte Runde:
+# Der Container liest seine eigene cgroup - der cgroup-Namespace zeigt ihm
+# "his own slice of the tree" (Redline Soft: "cat /sys/fs/cgroup/memory.max
+# inside a container shows your limit, not the host's"). cgroup v2:
+# memory.max ist der Hard-Limit ("The default is max, meaning there is no
+# limit", Facebook cgroup2-Doku); cgroup v1: memory.limit_in_bytes
+# ("set/show limit of memory usage", kernel memory.txt), ohne Limit steht
+# dort PAGE_COUNTER_MAX * PAGE_SIZE = 9223372036854771712 (huatuo PR 717).
+_CGROUP_LIMIT_FILES = (
+    "/sys/fs/cgroup/memory.max",                       # cgroup v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",     # cgroup v1
+)
+_CGROUP_UNLIMITED = 1 << 50  # Schwellwert: v1-Default liegt bei ~8 EiB, echtes Limit nie
+
+BUDGET_HEADROOM = 64 * 1024 * 1024  # Puffer zwischen Budget und Container-Grenze (Nutzerentscheidung: mem_limit - 64 MiB)
+
+
+def mem_limit():
+    # Speichergrenze des Containers in Bytes oder None (unbegrenzt/unbekannt)
+    for path in _CGROUP_LIMIT_FILES:
+        try:
+            with open(path, encoding="ascii") as f:
+                raw = f.read().strip()
+        except OSError:
+            continue
+        if raw == "max":  # cgroup v2 ohne Limit
+            return None
+        try:
+            v = int(raw)
+        except ValueError:
+            continue
+        if v >= _CGROUP_UNLIMITED:  # cgroup v1 ohne Limit (9223372036854771712)
+            return None
+        return v
+    return None
+
+
+def budget_max():
+    # Höchstwert für das Speicherbudget: Container-Speichergrenze minus Headroom;
+    # None, wenn der Container unbegrenzt läuft (dann droht kein Kernel-OOM über das Budget)
+    m = mem_limit()
+    return None if m is None else max(0, m - BUDGET_HEADROOM)

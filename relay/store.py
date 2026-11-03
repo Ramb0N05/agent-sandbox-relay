@@ -59,7 +59,7 @@ def _reindex():
 
 
 def settings_all():
-    # aktuelle Roh-Werte aus settings.json (ohne Overrides-Logik, fuer Anzeige und Merge)
+    # aktuelle Roh-Werte aus settings.json (ohne Overrides-Logik, für Anzeige und Merge)
     p = os.path.join(config.data_dir(), "settings.json")
     if os.path.exists(p):
         try:
@@ -77,7 +77,7 @@ def settings_raw(key):
 
 def save_settings(values):
     # Einstellungsseite (sechzehnte Runde): Overrides dauerhaft in DATA_DIR/settings.json,
-    # Roh-Werte (Budget in Env-Syntax) fuer Nachvollziehbarkeit; atomar wie tokens.json
+    # Roh-Werte (Budget in Env-Syntax) für Nachvollziehbarkeit; atomar wie tokens.json
     d = config.data_dir()
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, "settings.json.tmp")
@@ -87,7 +87,7 @@ def save_settings(values):
 
 
 def load_settings():
-    # beim Start: settings.json uebertraegt Werte in die config-Overrides (fail-closed wie tokens.json)
+    # beim Start: settings.json überträgt Werte in die config-Overrides (fail-closed wie tokens.json)
     p = os.path.join(config.data_dir(), "settings.json")
     if not os.path.exists(p):
         return
@@ -102,7 +102,7 @@ def load_settings():
         try:
             v = config.parse_size(d["budget"])
         except ValueError as e:
-            raise SystemExit("Einstellungs-Speicher: budget ungueltig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["budget"], e))
+            raise SystemExit("Einstellungs-Speicher: budget ungültig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["budget"], e))
         config.set_override("budget", v)
     if "exec_jobs_shown" in d:
         try:
@@ -127,8 +127,8 @@ def load_state():
             raise SystemExit("Token-Speicher unlesbar: " + p)
     if not workers and not submitters and config.TOKEN:
         # Migration: das Legacy-Token aus der Env wird als Worker- und Submit-Token registriert;
-        # die laufende VM und der Absender arbeiten weiter, beide Eintraege sind ueber die
-        # Verwaltung loeschbar, sobald echte Tokens existieren
+        # die laufende VM und der Absender arbeiten weiter, beide Einträge sind über die
+        # Verwaltung löschbar, sobald echte Tokens existieren
         h = hashlib.sha256(config.TOKEN.encode()).hexdigest()
         w = {"id": "w-" + uuid.uuid4().hex[:10], "name": "legacy", "hash": h, "legacy": True, "created": _now()}
         s = {"id": "s-" + uuid.uuid4().hex[:10], "name": "legacy", "hash": h, "worker_id": w["id"], "legacy": True, "created": _now()}
@@ -142,7 +142,7 @@ def load_state():
 
 
 def init():
-    # Schreib-Probe vor allem anderen: ein root-gehoeriges Volume wuerde sonst erst beim
+    # Schreib-Probe vor allem anderen: ein root-gehöriges Volume würde sonst erst beim
     # ersten save_state mit einem Traceback crashen (PermissionError tokens.json.tmp)
     d = config.data_dir()
     try:
@@ -153,7 +153,7 @@ def init():
         os.remove(probe)
     except OSError as e:
         raise SystemExit(
-            "DATA_DIR nicht schreibbar: %s (%s). Fix: Volume in Portainer loeschen (Inhalt wird "
+            "DATA_DIR nicht schreibbar: %s (%s). Fix: Volume in Portainer löschen (Inhalt wird "
             "aus der Env neu migriert) oder einmalig chownen: docker run --rm -v <volume>:/data "
             "alpine chown -R 65534:65534 /data; danach Container neu starten." % (d, e))
     load_settings()
@@ -163,7 +163,7 @@ def init():
 
 
 def reset_for_tests():
-    # nur fuer Stub-Tests: alles zuruecksetzen
+    # nur für Stub-Tests: alles zurücksetzen
     global jobs, files, workers, submitters, worker_by_hash, submit_by_hash, data_bytes, evs, job_done
     jobs = OrderedDict()
     files = OrderedDict()
@@ -177,7 +177,7 @@ def reset_for_tests():
 
 
 def _evict_for(need):
-    # OOM-Schutz: Budget freiraeumen - erst erledigte Jobs (aeltestes zuerst), dann aelteste Dateien
+    # OOM-Schutz: Budget freiräumen - erst erledigte Jobs (ältestes zuerst), dann älteste Dateien
     global data_bytes
     budget = config.budget()
     evicted = []
@@ -204,5 +204,5 @@ def _evict_for(need):
 
 
 def decode_file(rec):
-    # Rueckverwandlung der Speicherform gzip+base64 in Rohbytes
+    # Rückverwandlung der Speicherform gzip+base64 in Rohbytes
     return gzip.decompress(base64.b64decode(rec["enc"]))

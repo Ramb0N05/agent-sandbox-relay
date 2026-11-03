@@ -31,9 +31,13 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 
 ## Platzhalter vor dem ersten Boot ersetzen
 
-- <agent-sandbox-relay-token> in cloud-init und files/agent-sandbox-agent:
-  identisch mit AGENT_SANDBOX_RELAY_TOKEN im Docker-Stack auf dem
-  Hetzner-Server.
+- <agent-sandbox-relay-worker-token> in cloud-init und files/agent-sandbox-agent:
+  Worker-Token der VM (Rolle worker). Erstellung ueber die
+  Verwaltungsoberflaeche des Relays (GET /admin, Login mit Nutzername
+  admin und AGENT_SANDBOX_ADMIN_PASSWORD; das Token wird nur einmal bei
+  der Erstellung angezeigt). Solange keine echten Tokens existieren,
+  arbeitet das Legacy-Token aus AGENT_SANDBOX_RELAY_TOKEN im Docker-Stack
+  als Worker- und Submit-Token weiter (Migration beim Serverstart).
 - <agent-sandbox-relay-domain> in cloud-init und files/agent-sandbox-agent:
   Subdomain des Queue-Services (ENDPOINT des Agenten).
 - <ttyd-passwort> in cloud-init und files/ttyd-vibe.service: Basic-Auth-

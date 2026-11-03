@@ -3,7 +3,8 @@
 # Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
 # (provisioniert normalerweise per cloud-init, siehe cloud-init/vibe-sandbox-user-data.yaml)
 set -u
-TOKEN="<agent-sandbox-relay-token>"
+# Worker-Token (Rolle worker) des Relays; Erstellung ueber die Verwaltungsoberflaeche (GET /admin, Login admin)
+TOKEN="<agent-sandbox-relay-worker-token>"
 ENDPOINT="https://<agent-sandbox-relay-domain>"
 OUTMAX=8388608
 CMAX=900

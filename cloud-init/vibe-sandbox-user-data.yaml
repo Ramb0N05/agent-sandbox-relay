@@ -3,6 +3,7 @@ users:
   - name: vibe
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     shell: /bin/bash
+ssh_genkeytypes: []  # keine SSH-Host-Keys generieren (openssh wird deinstalliert)
 packages:
   - git
   - curl
@@ -209,6 +210,8 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - systemctl disable --now sshd
+  - pacman -Rns --noconfirm openssh  # Paket inkl. Abhaengigkeiten entfernen (packages-Modul installiert nur)
+  - rm -f /etc/ssh/ssh_host_*key*  # generierte Host-Keys sind von pacman nicht getrackt
   - growpart /dev/vda 3
   - btrfs filesystem resize max /
   - systemctl daemon-reload

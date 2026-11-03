@@ -10,7 +10,12 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 ## Inhalt
 
 - cloud-init/vibe-sandbox-user-data.yaml: komplette cloud-init user-data
-  (User vibe mit NOPASSWD-sudo, Pakete, write_files, runcmd). Auf dem Host
+  (User vibe mit NOPASSWD-sudo, Pakete, write_files, runcmd). Ohne SSH:
+  ssh_genkeytypes: [] verhindert die Host-Key-Generierung durch das
+  cc_ssh-Modul (leere Liste statt Default rsa/ecdsa/ed25519), runcmd
+  deinstalliert openssh per pacman -Rns --noconfirm und loescht die
+  generierten Host-Keys (das cloud-init packages-Modul kann nur
+  installieren, keine Pakete entfernen). Auf dem Host
   unter /root/vibe-sandbox-user-data.yaml ablegen; virt-install haengt sie
   als NoCloud-ISO nur beim ersten Boot an.
 - files/agent-sandbox-agent: Pull-Agent (elfte Runde: Python statt bash;

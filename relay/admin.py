@@ -1,4 +1,4 @@
-# relay/admin.py - Verwaltung: Tokens, Jobs, Audit, Admin-UI (elfte Runde)
+# relay/admin.py - management: tokens, jobs, audit, admin UI (11th round)
 import asyncio
 import hashlib
 import json
@@ -21,8 +21,8 @@ _TEMPLATE = os.path.join(os.path.dirname(__file__), "templates", "admin.html")
 
 class TokenCreate(BaseModel):
     role: str = Field(pattern="^(worker|submitter)$")
-    name: str | None = Field(default=None, max_length=64)  # optional: leer/None -> automatisch benannt
-    worker_id: str | None = None  # Pflicht für Submitter: jeder Submitter hängt an genau einem Worker
+    name: str | None = Field(default=None, max_length=64)  # optional: empty/None -> auto-named
+    worker_id: str | None = None  # required for submitters: each submitter is tied to exactly one worker
 
 
 class TokenRename(BaseModel):
@@ -34,12 +34,13 @@ class TokenAssign(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    # Einstellungsseite (siebzehnte Runde): Budget und Byte-Grenzen in Env-Syntax (b/kb/mb/gb),
-    # Zahlen-Limits mit Bereichsprüfung im Endpunkt
+    # settings page (17th round): budget and byte limits in env syntax (b/kb/mb/gb),
+    # numeric limits with range check in the endpoint
     budget: str | None = Field(default=None, max_length=16)
     exec_jobs_shown: int | None = None
     cmd_zeichen: int | None = None
     result_output_bytes: str | None = Field(default=None, max_length=16)
+    datei_bytes_roh: str | None = Field(default=None, max_length=16)
     job_store_eintraege: int | None = None
     datei_store_eintraege: int | None = None
     audit_rotation_bytes: str | None = Field(default=None, max_length=16)
@@ -74,7 +75,7 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
 
 @router.get("/admin/api/settings")
 async def admin_settings(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # Einstellungsseite: alle änderbaren Werte mit Quelle (datei|env|default) plus Stack-feste Grenzen
+    # settings page: all changeable values with source (datei|env|default) plus stack-fixed limits
     await auth.require_admin(request, credentials)
     budget_raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", config.DEFAULT_BUDGET)
     return {
@@ -101,11 +102,13 @@ async def admin_settings(request: Request, credentials: HTTPBasicCredentials | N
         "audit_rotation_bytes_quelle": "datei" if config.get_override("audit_rotation_bytes") is not None else "default",
         "long_poll_s": config.poll_seconds(),
         "long_poll_quelle": "datei" if config.get_override("long_poll_s") is not None else ("env" if "AGENT_SANDBOX_RELAY_POLL" in os.environ else "default"),
+        "datei_bytes_roh": config.datei_bytes_roh(),
+        "datei_bytes_roh_roh": store.settings_raw("datei_bytes_roh") if config.get_override("datei_bytes_roh") is not None else "8m",
+        "datei_bytes_roh_quelle": "datei" if config.get_override("datei_bytes_roh") is not None else "default",
         "fixe": {
-            "datei_bytes_roh": config.FILEMAX,
             "admin_nutzername": config.ADMIN_USERNAME,
         },
-        "hinweis_env": "Nur der Datei-Deckel (datei_bytes_roh) und der Admin-Nutzername stehen als Stack-Umgebung fest (Neustart nötig); alle anderen Werte sind hier änderbar.",
+        "hinweis_env": "Nur der Admin-Nutzername steht als Stack-Umgebung fest (Neustart nötig); alle anderen Werte sind hier änderbar.",
     }
 
 
@@ -129,7 +132,15 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
         except ValueError:
             raise HTTPException(status_code=422, detail="result_output_bytes ungültig. Syntax wie das Budget: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 8m)")
         changed["result_output_bytes"] = raw
-    # Budget und Output-Deckel kreuzweise prüfen: Budget >= Deckel, Deckel >= 64k, Deckel <= Budget
+    cand_file = None
+    if body.datei_bytes_roh is not None:
+        raw = body.datei_bytes_roh.strip()
+        try:
+            cand_file = config.parse_size(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="datei_bytes_roh ungültig. Syntax wie das Budget: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 8m)")
+        changed["datei_bytes_roh"] = raw
+    # cross-check budget and output cap: budget >= cap, cap >= 64k, cap <= budget
     eff_out = cand_out if cand_out is not None else config.result_output_bytes()
     eff_budget = cand_budget if cand_budget is not None else config.budget()
     if cand_budget is not None:
@@ -145,6 +156,11 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
             raise HTTPException(status_code=422, detail="result_output_bytes unter 64k (%d Bytes) - Resultate brauchen Raum für Meldungen" % cand_out)
         if cand_out > eff_budget:
             raise HTTPException(status_code=422, detail="result_output_bytes (%d Bytes) über dem Budget (%d Bytes) - jedes Result muss ins Budget passen" % (cand_out, eff_budget))
+    if cand_file is not None:
+        if cand_file < 65536:
+            raise HTTPException(status_code=422, detail="datei_bytes_roh unter 64k (%d Bytes) - auch kleine Dateien brauchen Spielraum für Meldungen" % cand_file)
+        if cand_file > eff_budget:
+            raise HTTPException(status_code=422, detail="datei_bytes_roh (%d Bytes) über dem Budget (%d Bytes) - jede Datei muss ins Budget passen" % (cand_file, eff_budget))
     if body.exec_jobs_shown is not None:
         if not 1 <= body.exec_jobs_shown <= 500:
             raise HTTPException(status_code=422, detail="erledigte Jobs je Submitter: 1 bis 500")
@@ -175,7 +191,7 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
             raise HTTPException(status_code=422, detail="Long-Poll: 0 bis 3600 Sekunden")
         changed["long_poll_s"] = body.long_poll_s
     if not changed:
-        raise HTTPException(status_code=422, detail="kein Feld gesetzt (budget, exec_jobs_shown, cmd_zeichen, result_output_bytes, job_store_eintraege, datei_store_eintraege, audit_rotation_bytes, long_poll_s)")
+        raise HTTPException(status_code=422, detail="kein Feld gesetzt (budget, exec_jobs_shown, cmd_zeichen, result_output_bytes, datei_bytes_roh, job_store_eintraege, datei_store_eintraege, audit_rotation_bytes, long_poll_s)")
     values = store.settings_all()
     values.update(changed)
     if "budget" in values:
@@ -186,6 +202,8 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
         config.set_override("cmd_zeichen", int(values["cmd_zeichen"]))
     if "result_output_bytes" in values:
         config.set_override("result_output_bytes", config.parse_size(values["result_output_bytes"]))
+    if "datei_bytes_roh" in values:
+        config.set_override("datei_bytes_roh", config.parse_size(values["datei_bytes_roh"]))
     if "job_store_eintraege" in values:
         config.set_override("job_store_eintraege", int(values["job_store_eintraege"]))
     if "datei_store_eintraege" in values:
@@ -202,7 +220,7 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
 
 @router.get("/admin/api/usage")
 async def admin_usage(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # API-Doku für die Verwaltungsoberfläche: dieselbe Struktur wie GET /usage, aber mit der HTTP-Basic-Session statt eines Bearer-Tokens
+    # API docs for the admin UI: same structure as GET /usage, but with the HTTP basic session instead of a bearer token
     await auth.require_admin(request, credentials)
     return jobs.usage_data()
 
@@ -222,7 +240,7 @@ async def admin_tokens(request: Request, credentials: HTTPBasicCredentials | Non
 @router.post("/admin/api/tokens")
 async def admin_create(body: TokenCreate, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
     await auth.require_admin(request, credentials)
-    plain = secrets.token_urlsafe(32)  # 32 Byte Zufall gelten als ausreichend (Python-secrets-Doku)
+    plain = secrets.token_urlsafe(32)  # 32 random bytes are considered sufficient (Python secrets docs)
     name = (body.name or "").strip() or None
     if body.role == "worker":
         name = name or _auto_name("worker")
@@ -249,21 +267,21 @@ async def admin_create(body: TokenCreate, request: Request, credentials: HTTPBas
 
 @router.patch("/admin/api/tokens/{tid}")
 async def admin_rename(tid: str, body: TokenRename, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # Umbenennen von Worker oder Submitter (Anzeige in Admin-UI und Audit)
+    # rename a worker or submitter (display in admin UI and audit)
     await auth.require_admin(request, credentials)
     rec = next((x for x in store.workers if x["id"] == tid), None)
-    rolle = "worker"
+    role = "worker"
     if rec is None:
         rec = next((x for x in store.submitters if x["id"] == tid), None)
-        rolle = "submitter"
+        role = "submitter"
     if rec is None:
         raise HTTPException(status_code=404, detail="Token nicht gefunden")
-    alt = rec["name"]
+    old_name = rec["name"]
     rec["name"] = body.name
-    # Jobs in der Queue behalten den alten Anzeigenamen (historische Kennung); neue Jobs tragen den neuen Namen
+    # jobs in the queue keep the old display name (historical id); new jobs carry the new name
     store.save_state()
-    store.audit("token_rename", rolle=rolle, id=tid, von=alt, nach=body.name)
-    return {"ok": True, "rolle": rolle, "name": body.name}
+    store.audit("token_rename", rolle=role, id=tid, von=old_name, nach=body.name)
+    return {"ok": True, "rolle": role, "name": body.name}
 
 
 @router.post("/admin/api/tokens/{tid}/assign")
@@ -275,10 +293,10 @@ async def admin_assign(tid: str, body: TokenAssign, request: Request, credential
     w = next((w for w in store.workers if w["id"] == body.worker_id), None)
     if w is None:
         raise HTTPException(status_code=400, detail="worker_id unbekannt")
-    alt = next((x["name"] for x in store.workers if x["id"] == s["worker_id"]), "?")
+    old_name = next((x["name"] for x in store.workers if x["id"] == s["worker_id"]), "?")
     s["worker_id"] = w["id"]
     store.save_state()
-    store.audit("token_assign", submitter=s["name"], von=alt, nach=w["name"])
+    store.audit("token_assign", submitter=s["name"], von=old_name, nach=w["name"])
     return {"ok": True, "submitter": s["name"], "worker": w["name"]}
 
 
@@ -308,19 +326,19 @@ async def admin_delete(tid: str, request: Request, credentials: HTTPBasicCredent
 
 def _job_view(j):
     cmd = j.get("cmd") or ""
-    if len(cmd) > 80:  # im Listing nie den vollen cmd (Ausfuehrungspläne gehören nicht in die Übersicht)
+    if len(cmd) > 80:  # never the full cmd in the listing (execution plans do not belong in the overview)
         cmd = cmd[:80] + "..."
     return {"id": j["id"], "status": j["status"], "worker": j.get("worker"), "submitter": j.get("submitter"),
             "rc": j.get("rc"), "out_bytes": len(j["output"]) if isinstance(j.get("output"), str) else 0,
             "ts": j["ts"], "cmd": cmd}
 
 
-DETAIL_OUTMAX = 16384  # Output im Job-Dialog gekürzt (volles Result bliebe bis 8 MiB in der UI)
+DETAIL_OUTMAX = 16384  # output truncated in the job dialog (a full result would be up to 8 MiB in the UI)
 
 
 @router.get("/admin/api/jobs/{jid}")
 async def admin_job_detail(jid: str, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # vollständiger cmd für den Dialog der Jobsseite (das Listing kürzt bei 80 Zeichen)
+    # full cmd for the jobs page dialog (the listing truncates at 80 characters)
     await auth.require_admin(request, credentials)
     j = store.jobs.get(jid)
     if j is None:
@@ -344,7 +362,7 @@ async def admin_jobs(request: Request, credentials: HTTPBasicCredentials | None 
     done_by: dict = {s["id"]: [] for s in store.submitters}
     for j in store.jobs.values():
         sid = j["submitter_id"]
-        if sid not in subs:  # Jobs eines gelöschten Submitters nicht verstecken
+        if sid not in subs:  # do not hide jobs of a deleted submitter
             if sid not in open_by:
                 open_by[sid] = []
                 done_by[sid] = []
@@ -355,9 +373,9 @@ async def admin_jobs(request: Request, credentials: HTTPBasicCredentials | None 
             open_by[sid].append(_job_view(j))
     out = []
     for g in groups:
-        done = sorted(done_by[g["id"]], key=lambda v: v["ts"], reverse=True)[:shown]  # neueste zuerst
-        offen = sorted(open_by[g["id"]], key=lambda v: v["ts"])  # älteste zuerst
-        out.append({"id": g["id"], "name": g["name"], "offen": offen, "erledigt": done})
+        done = sorted(done_by[g["id"]], key=lambda v: v["ts"], reverse=True)[:shown]  # newest first
+        open_jobs = sorted(open_by[g["id"]], key=lambda v: v["ts"])  # oldest first
+        out.append({"id": g["id"], "name": g["name"], "offen": open_jobs, "erledigt": done})
     return {"submitters": out}
 
 
@@ -383,7 +401,7 @@ async def admin_resume(jid: str, request: Request, credentials: HTTPBasicCredent
     if j["status"] != "paused":
         raise HTTPException(status_code=409, detail="nur angehaltene Jobs lassen sich fortsetzen")
     j["status"] = "queued"
-    store.evs.setdefault(j["worker_id"], asyncio.Event()).set()  # wartende Worker sofort wecken
+    store.evs.setdefault(j["worker_id"], asyncio.Event()).set()  # wake waiting workers immediately
     store.audit("job_resume", jid=jid)
     return {"ok": True}
 
@@ -394,7 +412,7 @@ async def admin_delete_job(jid: str, request: Request, credentials: HTTPBasicCre
     j = store.jobs.pop(jid, None)
     if j is None:
         raise HTTPException(status_code=404, detail="Job nicht gefunden")
-    if isinstance(j.get("output"), str):  # belegtes Budget zurückgeben
+    if isinstance(j.get("output"), str):  # return allocated budget
         store.data_bytes -= len(j["output"])
     store.job_done.pop(jid, None)
     store.audit("job_delete", jid=jid, status=j["status"], submitter=j.get("submitter"))
@@ -411,7 +429,7 @@ async def admin_audit(request: Request, limit: int = 50, credentials: HTTPBasicC
         with open(p, encoding="utf-8") as f:
             lines = f.readlines()[-limit:]
     out = []
-    for ln in reversed(lines):  # neueste zuerst
+    for ln in reversed(lines):  # newest first
         try:
             out.append(json.loads(ln))
         except ValueError:

@@ -1,4 +1,4 @@
-# relay/store.py - Zustand: Jobs, Dateien, Tokens, Budget, Audit, Persistenz (elfte Runde)
+# relay/store.py - state: jobs, files, tokens, budget, audit, persistence (11th round)
 import asyncio
 import gzip
 import base64
@@ -29,7 +29,7 @@ def _now():
 
 
 def audit(event, **fields):
-    # Audit-Log: JSON-Zeilen in DATA_DIR/audit.jsonl; niemals cmd-Inhalte oder Token-Werte loggen
+    # audit log: JSON lines in DATA_DIR/audit.jsonl; never log cmd contents or token values
     try:
         d = config.data_dir()
         os.makedirs(d, exist_ok=True)
@@ -59,7 +59,7 @@ def _reindex():
 
 
 def settings_all():
-    # aktuelle Roh-Werte aus settings.json (ohne Overrides-Logik, für Anzeige und Merge)
+    # raw values from settings.json (no override logic, for display and merge)
     p = os.path.join(config.data_dir(), "settings.json")
     if os.path.exists(p):
         try:
@@ -76,8 +76,8 @@ def settings_raw(key):
 
 
 def save_settings(values):
-    # Einstellungsseite (sechzehnte Runde): Overrides dauerhaft in DATA_DIR/settings.json,
-    # Roh-Werte (Budget in Env-Syntax) für Nachvollziehbarkeit; atomar wie tokens.json
+    # settings page (16th round): overrides persisted in DATA_DIR/settings.json,
+    # raw values (budget in env syntax) for traceability; atomic like tokens.json
     d = config.data_dir()
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, "settings.json.tmp")
@@ -87,7 +87,7 @@ def save_settings(values):
 
 
 def load_settings():
-    # beim Start: settings.json überträgt Werte in die config-Overrides (fail-closed wie tokens.json)
+    # at startup: settings.json transfers values into config overrides (fail-closed like tokens.json)
     p = os.path.join(config.data_dir(), "settings.json")
     if not os.path.exists(p):
         return
@@ -146,6 +146,16 @@ def load_settings():
         if not 1 <= n <= 5000:
             raise SystemExit("Einstellungs-Speicher: datei_store_eintraege ausserhalb 1..5000: %r" % (d["datei_store_eintraege"],))
         config.set_override("datei_store_eintraege", n)
+    if "datei_bytes_roh" in d:
+        try:
+            v = config.parse_size(d["datei_bytes_roh"])
+        except ValueError as e:
+            raise SystemExit("Einstellungs-Speicher: datei_bytes_roh ungültig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["datei_bytes_roh"], e))
+        if v < 65536:
+            raise SystemExit("Einstellungs-Speicher: datei_bytes_roh unter 64k: %r" % (d["datei_bytes_roh"],))
+        if v > config.budget():
+            raise SystemExit("Einstellungs-Speicher: datei_bytes_roh über dem Budget: %r (%d Bytes > %d Bytes)" % (d["datei_bytes_roh"], v, config.budget()))
+        config.set_override("datei_bytes_roh", v)
     if "audit_rotation_bytes" in d:
         try:
             v = config.parse_size(d["audit_rotation_bytes"])
@@ -176,9 +186,9 @@ def load_state():
         except (OSError, ValueError):
             raise SystemExit("Token-Speicher unlesbar: " + p)
     if not workers and not submitters and config.TOKEN:
-        # Migration: das Legacy-Token aus der Env wird als Worker- und Submit-Token registriert;
-        # die laufende VM und der Absender arbeiten weiter, beide Einträge sind über die
-        # Verwaltung löschbar, sobald echte Tokens existieren
+        # migration: the legacy env token is registered as worker and submit token;
+        # the running VM and the sender keep working, both entries can be deleted via the
+        # admin UI once real tokens exist
         h = hashlib.sha256(config.TOKEN.encode()).hexdigest()
         w = {"id": "w-" + uuid.uuid4().hex[:10], "name": "legacy", "hash": h, "legacy": True, "created": _now()}
         s = {"id": "s-" + uuid.uuid4().hex[:10], "name": "legacy", "hash": h, "worker_id": w["id"], "legacy": True, "created": _now()}
@@ -192,8 +202,8 @@ def load_state():
 
 
 def init():
-    # Schreib-Probe vor allem anderen: ein root-gehöriges Volume würde sonst erst beim
-    # ersten save_state mit einem Traceback crashen (PermissionError tokens.json.tmp)
+    # write probe before anything else: a root-owned volume would otherwise only crash at
+    # the first save_state with a traceback (PermissionError tokens.json.tmp)
     d = config.data_dir()
     try:
         os.makedirs(d, exist_ok=True)
@@ -208,12 +218,12 @@ def init():
             "alpine chown -R 65534:65534 /data; danach Container neu starten." % (d, e))
     load_settings()
     load_state()
-    audit("boot", budget=config.budget(), outmax=config.result_output_bytes(), filemax=config.FILEMAX,
+    audit("boot", budget=config.budget(), outmax=config.result_output_bytes(), filemax=config.datei_bytes_roh(),
           workers=len(workers), submitters=len(submitters))
 
 
 def reset_for_tests():
-    # nur für Stub-Tests: alles zurücksetzen
+    # stub tests only: reset everything
     global jobs, files, workers, submitters, worker_by_hash, submit_by_hash, data_bytes, evs, job_done
     jobs = OrderedDict()
     files = OrderedDict()
@@ -227,7 +237,7 @@ def reset_for_tests():
 
 
 def _evict_for(need):
-    # OOM-Schutz: Budget freiräumen - erst erledigte Jobs (ältestes zuerst), dann älteste Dateien
+    # OOM protection: free budget - finished jobs first (oldest first), then oldest files
     global data_bytes
     budget = config.budget()
     evicted = []
@@ -254,5 +264,5 @@ def _evict_for(need):
 
 
 def decode_file(rec):
-    # Rückverwandlung der Speicherform gzip+base64 in Rohbytes
+    # convert the stored gzip+base64 form back to raw bytes
     return gzip.decompress(base64.b64decode(rec["enc"]))

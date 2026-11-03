@@ -260,7 +260,7 @@ function showToken(tok, name){
   document.getElementById("dlg-token-text").textContent = "Token fuer '" + name + "':\n" + tok;
   dlgToken.showModal();
 }
-function dlgConfirm(title, text){
+function showConfirm(title, text){
   return new Promise(function(res){
     document.getElementById("dlg-confirm-title").textContent = title;
     document.getElementById("dlg-confirm-text").textContent = text;
@@ -274,7 +274,7 @@ function dlgConfirm(title, text){
     dlgConfirm.showModal();
   });
 }
-function dlgRename(oldName){
+function showRename(oldName){
   return new Promise(function(res){
     document.getElementById("dlg-rename-old").textContent = "Alter Name: " + oldName;
     var inp = document.getElementById("dlg-rename-name");
@@ -435,7 +435,7 @@ async function addSubmitter(){
   refreshTokens();
 }
 async function rename(tid, alt){
-  var n = await dlgRename(alt);
+  var n = await showRename(alt);
   if (!n){ return; }
   await api("/admin/api/tokens/" + tid, { method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: n}) });
   refreshTokens();
@@ -447,7 +447,7 @@ async function assign(tid){
   refreshTokens();
 }
 async function del(tid, role, name){
-  var ok = await dlgConfirm(role + " loeschen", "Token '" + name + "' loeschen? Der Zugang endet sofort.");
+  var ok = await showConfirm(role + " loeschen", "Token '" + name + "' loeschen? Der Zugang endet sofort.");
   if (!ok){ return; }
   await api("/admin/api/tokens/" + tid, { method: "DELETE" });
   refreshTokens();
@@ -476,7 +476,7 @@ async function refreshJobs(){
     var b;
     if ((b = td.querySelector(".pau"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }); }
     if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
-    if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await dlgConfirm("Job loeschen", "Job " + jid + " loeschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
+    if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await showConfirm("Job loeschen", "Job " + jid + " loeschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
   });
 }
 

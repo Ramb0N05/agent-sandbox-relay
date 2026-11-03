@@ -58,14 +58,14 @@ write_files:
 
       TOKEN = _load_token()
       ENDPOINT = "https://<agent-sandbox-relay-domain>"
-      POLL_TIMEOUT = 310  # Client-Deckel knapp ueber dem serverseitigen Long-Poll (300 s)
-      CMAX = 900  # Ausfuehrungs-Deckel je Job (Sekunden)
+      POLL_TIMEOUT = 310  # Client-Deckel knapp über dem serverseitigen Long-Poll (300 s)
+      CMAX = 900  # Ausführungs-Deckel je Job (Sekunden)
       OUTMAX = 8 * 1024 * 1024  # Output-Deckel 8 MiB (Abschnitt 10.7)
-      FILEMAX = 8 * 1024 * 1024  # Roh-Groesse pro Datei im Datei-Store (Abschnitt 10.8)
+      FILEMAX = 8 * 1024 * 1024  # Roh-Größe pro Datei im Datei-Store (Abschnitt 10.8)
 
 
       class Relay:
-          # persistente Verbindung: http.client uebernimmt Keep-Alive, Reconnect mit einem Retry
+          # persistente Verbindung: http.client übernimmt Keep-Alive, Reconnect mit einem Retry
           def __init__(self, endpoint, token, timeout=POLL_TIMEOUT):
               u = urlsplit(endpoint)
               self.host = u.hostname
@@ -84,7 +84,7 @@ write_files:
                   self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
 
           def _request(self, method, path, body=None, headers=None, retry=True):
-              # ein Versuch ueber die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
+              # ein Versuch über die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
               if self.conn is None:
                   self._connect()
               h = {"Authorization": "Bearer " + self.token, "User-Agent": "agent-sandbox-agent"}
@@ -134,7 +134,7 @@ write_files:
               return 0
 
           def send_file(self, path):
-              # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn ueber FILEMAX
+              # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn über FILEMAX
               try:
                   with open(path, "rb") as f:
                       data = f.read(FILEMAX + 1)
@@ -150,7 +150,7 @@ write_files:
 
 
       def run_cmd(cmd):
-          # Ausfuehrung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
+          # Ausführung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
           try:
               p = subprocess.run(["timeout", str(CMAX), "bash", "-lc", cmd],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -164,7 +164,7 @@ write_files:
 
 
       def execute(cmd, relay):
-          # Praefixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
+          # Präfixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
           if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
               _, fid, target = cmd.split(" ", 2)
               rc = relay.fetch_file(fid, target)
@@ -179,7 +179,7 @@ write_files:
 
 
       def poll_once(relay):
-          # ein Zyklus: Long-Poll, Ausfuehrung, Result; None bei Leerlauf (kein Sleep noetig)
+          # ein Zyklus: Long-Poll, Ausführung, Result; None bei Leerlauf (kein Sleep nötig)
           j = relay.next_job()
           if j is None:
               return None
@@ -235,7 +235,7 @@ write_files:
       # vmadmin - Verwaltung der vibe-sandbox-VM auf Port 80 (nur Host-Zugriff; NAT ohne DNAT)
       # Stil wie die Relay-Verwaltung (relay/templates/admin.html): Dark-Theme, Login-Card mit
       # sessionStorage, Hash-Navigation, native <dialog>-Modals, CSP-Nonce, 401 ohne Challenge
-      # (Runde 14: Basic-Challenges loesen native Browser-Login-Dialoge aus).
+      # (Runde 14: Basic-Challenges lösen native Browser-Login-Dialoge aus).
       # Nur Python-stdlib (http.server), keine Pakete - Provisionierung per cloud-init.
       # Quellen: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, Port < 1024 ohne root),
       # ttyd -c user:password (kein Credential-File, deshalb Doppelpunkt-Verbot),
@@ -322,7 +322,7 @@ write_files:
 
       def ttyd_unit_content(pw):
           # Passwort bleibt im ExecStart-Klartext (ttyd hat kein Credential-File; ps-lesbar -
-          # dokumentierte Schwaeche wie im Bestandsaufbau; die VM hat nur den User vibe)
+          # dokumentierte Schwäche wie im Bestandsaufbau; die VM hat nur den User vibe)
           return (
               "[Unit]\n"
               "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
@@ -416,7 +416,7 @@ write_files:
 
 
       def check_admin(auth_header, peer):
-          # Rueckgabe: None bei Erfolg, sonst (status_code, headers)
+          # Rückgabe: None bei Erfolg, sonst (status_code, headers)
           rem = lockout_remaining(peer)
           if rem > 0:
               return 429, {"Retry-After": str(int(rem) + 1)}
@@ -571,7 +571,7 @@ write_files:
           <label class="field">Neues Worker-Token (aus der Relay-Verwaltung kopieren)
             <input id="tok" type="password" placeholder="Token einsetzen" autocomplete="off"></label>
           <div class="row"><button class="primary" id="btn-token">Token speichern (Agent startet neu)</button></div>
-          <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist noetig, weil der Agent das Token beim Start liest.</p>
+          <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist nötig, weil der Agent das Token beim Start liest.</p>
         </div>
         <h2>ttyd-Passwort <span class="muted">(Web-Terminal, nur Host-Zugriff)</span></h2>
         <div class="card">
@@ -584,7 +584,7 @@ write_files:
         <div class="card">
           <label class="field">Aktuelles Passwort <input id="oldpw" type="password" autocomplete="current-password"></label>
           <label class="field">Neues Passwort (8-128 Zeichen) <input id="newpw" type="password" autocomplete="new-password"></label>
-          <div class="row"><button class="primary" id="btn-pw">Passwort aendern</button></div>
+          <div class="row"><button class="primary" id="btn-pw">Passwort ändern</button></div>
         </div>
       </section>
 
@@ -594,7 +594,7 @@ write_files:
           <div class="row">
             <button id="btn-restart-agent">agent-sandbox-agent neu starten</button>
             <button id="btn-restart-ttyd">ttyd-vibe neu starten</button>
-            <span class="muted">laeuft je als User vibe</span>
+            <span class="muted">läuft je als User vibe</span>
           </div>
         </div>
         <h2>Agent-Journal <span class="muted">(letzte 30 Zeilen)</span></h2>
@@ -688,15 +688,23 @@ write_files:
         PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
         if (msg){ document.getElementById("loginmsg").textContent = msg; }
       }
-      async function doLogin(){
-        PW = document.getElementById("pw").value;
+      async function tryLogin(pw, ausSession){
+        PW = pw;
         try {
           await api("/admin/api/state");
           sessionStorage.setItem("vmadminpw", PW);
           document.getElementById("mode").textContent = "angemeldet (admin)";
           showPage(pageFromHash());
-        } catch (e){}
+          return true;
+        } catch (e){
+          if (ausSession){
+            PW = "";
+            sessionStorage.removeItem("vmadminpw");
+          }
+          return false;
+        }
       }
+      async function doLogin(){ return tryLogin(document.getElementById("pw").value, false); }
       function logout(){
         sessionStorage.removeItem("vmadminpw");
         location.hash = "";
@@ -747,7 +755,7 @@ write_files:
         document.getElementById("newpw").value = "";
         PW = newpw;
         sessionStorage.setItem("vmadminpw", PW);
-        toast("Admin-Passwort geaendert");
+        toast("Admin-Passwort geändert");
       }
       async function restartService(unit){
         var ok = await showConfirm("Neustart", unit + " neu starten?");
@@ -778,7 +786,7 @@ write_files:
       document.getElementById("btn-journal").addEventListener("click", refreshJournal);
       document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
       window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });
-      if (PW){ doLogin(); } else { showLogin(""); }
+      if (PW){ tryLogin(PW, true); } else { showLogin(""); }
       </script>
       </body>
       </html>
@@ -869,7 +877,7 @@ write_files:
               try:
                   if self.path == "/admin/api/token" and "token" in data:
                       if not validate_token(data["token"]):
-                          self._send_json(422, {"error": "Token ungueltig (8-128 ASCII-Zeichen, ohne Whitespace)"})
+                          self._send_json(422, {"error": "Token ungültig (8-128 ASCII-Zeichen, ohne Whitespace)"})
                           return
                       write_atomic(TOKEN_FILE, data["token"] + "\n")
                       r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
@@ -878,7 +886,7 @@ write_files:
                       return
                   if self.path == "/admin/api/ttyd" and "password" in data:
                       if not validate_ttyd_pw(data["password"]):
-                          self._send_json(422, {"error": "Passwort ungueltig (1-64 druckbare ASCII, kein Doppelpunkt, kein Whitespace)"})
+                          self._send_json(422, {"error": "Passwort ungültig (1-64 druckbare ASCII, kein Doppelpunkt, kein Whitespace)"})
                           return
                       fd, tmp = tempfile.mkstemp(prefix="ttyd-unit-")
                       with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -899,7 +907,7 @@ write_files:
                           self._send_json(403, {"error": "aktuelles Passwort falsch"})
                           return
                       if not validate_admin_pw(data["new"]):
-                          self._send_json(422, {"error": "neues Passwort ungueltig (8-128 druckbare Zeichen)"})
+                          self._send_json(422, {"error": "neues Passwort ungültig (8-128 druckbare Zeichen)"})
                           return
                       write_atomic(ADMIN_HASH_FILE, sha256_hex(data["new"]) + "\n")
                       self._send_json(200, {"ok": True})
@@ -934,7 +942,7 @@ write_files:
       ExecStart=/usr/local/bin/vmadmin
       Restart=always
       RestartSec=5
-      # Port 80 ohne root: AmbientCapabilities uebertraegt CAP_NET_BIND_SERVICE an den
+      # Port 80 ohne root: AmbientCapabilities überträgt CAP_NET_BIND_SERVICE an den
       # Prozess, CapabilityBoundingSet schneidet alles andere ab (minimal exposure).
       AmbientCapabilities=CAP_NET_BIND_SERVICE
       CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -943,7 +951,7 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - systemctl disable --now sshd
-  - pacman -Rns --noconfirm openssh  # Paket inkl. Abhaengigkeiten entfernen (packages-Modul installiert nur)
+  - pacman -Rns --noconfirm openssh  # Paket inkl. Abhängigkeiten entfernen (packages-Modul installiert nur)
   - rm -f /etc/ssh/ssh_host_*key*  # generierte Host-Keys sind von pacman nicht getrackt
   - growpart /dev/vda 3
   - btrfs filesystem resize max /

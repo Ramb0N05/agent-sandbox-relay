@@ -2,7 +2,7 @@
 # vmadmin - Verwaltung der vibe-sandbox-VM auf Port 80 (nur Host-Zugriff; NAT ohne DNAT)
 # Stil wie die Relay-Verwaltung (relay/templates/admin.html): Dark-Theme, Login-Card mit
 # sessionStorage, Hash-Navigation, native <dialog>-Modals, CSP-Nonce, 401 ohne Challenge
-# (Runde 14: Basic-Challenges loesen native Browser-Login-Dialoge aus).
+# (Runde 14: Basic-Challenges lösen native Browser-Login-Dialoge aus).
 # Nur Python-stdlib (http.server), keine Pakete - Provisionierung per cloud-init.
 # Quellen: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, Port < 1024 ohne root),
 # ttyd -c user:password (kein Credential-File, deshalb Doppelpunkt-Verbot),
@@ -89,7 +89,7 @@ def write_atomic(path, content, mode=0o600):
 
 def ttyd_unit_content(pw):
     # Passwort bleibt im ExecStart-Klartext (ttyd hat kein Credential-File; ps-lesbar -
-    # dokumentierte Schwaeche wie im Bestandsaufbau; die VM hat nur den User vibe)
+    # dokumentierte Schwäche wie im Bestandsaufbau; die VM hat nur den User vibe)
     return (
         "[Unit]\n"
         "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
@@ -183,7 +183,7 @@ def clear_fails(peer):
 
 
 def check_admin(auth_header, peer):
-    # Rueckgabe: None bei Erfolg, sonst (status_code, headers)
+    # Rückgabe: None bei Erfolg, sonst (status_code, headers)
     rem = lockout_remaining(peer)
     if rem > 0:
         return 429, {"Retry-After": str(int(rem) + 1)}
@@ -338,7 +338,7 @@ label.field input{width:100%}
     <label class="field">Neues Worker-Token (aus der Relay-Verwaltung kopieren)
       <input id="tok" type="password" placeholder="Token einsetzen" autocomplete="off"></label>
     <div class="row"><button class="primary" id="btn-token">Token speichern (Agent startet neu)</button></div>
-    <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist noetig, weil der Agent das Token beim Start liest.</p>
+    <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist nötig, weil der Agent das Token beim Start liest.</p>
   </div>
   <h2>ttyd-Passwort <span class="muted">(Web-Terminal, nur Host-Zugriff)</span></h2>
   <div class="card">
@@ -351,7 +351,7 @@ label.field input{width:100%}
   <div class="card">
     <label class="field">Aktuelles Passwort <input id="oldpw" type="password" autocomplete="current-password"></label>
     <label class="field">Neues Passwort (8-128 Zeichen) <input id="newpw" type="password" autocomplete="new-password"></label>
-    <div class="row"><button class="primary" id="btn-pw">Passwort aendern</button></div>
+    <div class="row"><button class="primary" id="btn-pw">Passwort ändern</button></div>
   </div>
 </section>
 
@@ -361,7 +361,7 @@ label.field input{width:100%}
     <div class="row">
       <button id="btn-restart-agent">agent-sandbox-agent neu starten</button>
       <button id="btn-restart-ttyd">ttyd-vibe neu starten</button>
-      <span class="muted">laeuft je als User vibe</span>
+      <span class="muted">läuft je als User vibe</span>
     </div>
   </div>
   <h2>Agent-Journal <span class="muted">(letzte 30 Zeilen)</span></h2>
@@ -455,15 +455,23 @@ function showLogin(msg){
   PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
   if (msg){ document.getElementById("loginmsg").textContent = msg; }
 }
-async function doLogin(){
-  PW = document.getElementById("pw").value;
+async function tryLogin(pw, ausSession){
+  PW = pw;
   try {
     await api("/admin/api/state");
     sessionStorage.setItem("vmadminpw", PW);
     document.getElementById("mode").textContent = "angemeldet (admin)";
     showPage(pageFromHash());
-  } catch (e){}
+    return true;
+  } catch (e){
+    if (ausSession){
+      PW = "";
+      sessionStorage.removeItem("vmadminpw");
+    }
+    return false;
+  }
 }
+async function doLogin(){ return tryLogin(document.getElementById("pw").value, false); }
 function logout(){
   sessionStorage.removeItem("vmadminpw");
   location.hash = "";
@@ -514,7 +522,7 @@ async function changePw(){
   document.getElementById("newpw").value = "";
   PW = newpw;
   sessionStorage.setItem("vmadminpw", PW);
-  toast("Admin-Passwort geaendert");
+  toast("Admin-Passwort geändert");
 }
 async function restartService(unit){
   var ok = await showConfirm("Neustart", unit + " neu starten?");
@@ -545,7 +553,7 @@ document.getElementById("btn-restart-ttyd").addEventListener("click", function()
 document.getElementById("btn-journal").addEventListener("click", refreshJournal);
 document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
 window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });
-if (PW){ doLogin(); } else { showLogin(""); }
+if (PW){ tryLogin(PW, true); } else { showLogin(""); }
 </script>
 </body>
 </html>
@@ -636,7 +644,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/admin/api/token" and "token" in data:
                 if not validate_token(data["token"]):
-                    self._send_json(422, {"error": "Token ungueltig (8-128 ASCII-Zeichen, ohne Whitespace)"})
+                    self._send_json(422, {"error": "Token ungültig (8-128 ASCII-Zeichen, ohne Whitespace)"})
                     return
                 write_atomic(TOKEN_FILE, data["token"] + "\n")
                 r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
@@ -645,7 +653,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/admin/api/ttyd" and "password" in data:
                 if not validate_ttyd_pw(data["password"]):
-                    self._send_json(422, {"error": "Passwort ungueltig (1-64 druckbare ASCII, kein Doppelpunkt, kein Whitespace)"})
+                    self._send_json(422, {"error": "Passwort ungültig (1-64 druckbare ASCII, kein Doppelpunkt, kein Whitespace)"})
                     return
                 fd, tmp = tempfile.mkstemp(prefix="ttyd-unit-")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -666,7 +674,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(403, {"error": "aktuelles Passwort falsch"})
                     return
                 if not validate_admin_pw(data["new"]):
-                    self._send_json(422, {"error": "neues Passwort ungueltig (8-128 druckbare Zeichen)"})
+                    self._send_json(422, {"error": "neues Passwort ungültig (8-128 druckbare Zeichen)"})
                     return
                 write_atomic(ADMIN_HASH_FILE, sha256_hex(data["new"]) + "\n")
                 self._send_json(200, {"ok": True})

@@ -1,4 +1,4 @@
-# relay/jobs.py - Job-Endpunkte (elfte Runde: angehaltene Jobs werden nicht gezogen)
+# relay/jobs.py - job endpoints (11th round: paused jobs are not picked up)
 import asyncio
 import time
 import uuid
@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class Job(BaseModel):
-    cmd: str = Field(max_length=config.CMD_ZEICHEN_HARD)  # absolute Kappe; das einstellbare Limit prüft submit
+    cmd: str = Field(max_length=config.CMD_ZEICHEN_HARD)  # absolute cap; submit checks the configurable limit
 
 
 @router.post("/jobs")
@@ -28,7 +28,7 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
                        "ts": time.time(), "worker_id": w["id"], "worker": w["name"],
                        "submitter_id": sub["id"], "submitter": sub["name"]}
     if len(store.jobs) > config.job_store_eintraege():
-        _, old = store.jobs.popitem(last=False)  # Begrenzung: älteste Jobs zuerst raus
+        _, old = store.jobs.popitem(last=False)  # limit: oldest jobs dropped first
         if old.get("output") is not None:
             store.data_bytes -= len(old["output"])
         store.job_done.pop(old["id"], None)
@@ -39,7 +39,7 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
 
 
 def _take_queued(worker_id):
-    # nur status=="queued": angehaltene Jobs (paused) überspringt der Worker
+    # only status=="queued": the worker skips paused jobs
     for j in store.jobs.values():
         if j["status"] == "queued" and j["worker_id"] == worker_id:
             j["status"] = "running"
@@ -51,7 +51,7 @@ def _take_queued(worker_id):
 async def next_job(request: Request, authorization: str | None = Header(None)):
     w = auth.auth_bearer(request, authorization, "worker")
     ev = store.evs.setdefault(w["id"], asyncio.Event())
-    ev.clear()  # erst zurücksetzen, dann ziehen: kein verlorenes Aufwecken
+    ev.clear()  # clear first, then pick: no lost wakeup
     j = _take_queued(w["id"])
     if j:
         store.audit("deliver", jid=j["id"], worker=w["name"])
@@ -83,7 +83,7 @@ async def post_result(jid: str, body: dict, request: Request, authorization: str
             out = out[:config.result_output_bytes()]  # Output-Deckel auch serverseitig (einstellbar)
         store._evict_for(len(out))
         budget = config.budget()
-        if store.data_bytes + len(out) > budget:  # Einzelresult größer als Restbudget: kürzen statt OOM
+        if store.data_bytes + len(out) > budget:  # single result larger than the remaining budget: truncate instead of OOM
             marker = "\n[agent-sandbox-relay: Output gekürzt, Speicherbudget erreicht]"
             allowed = max(0, budget - store.data_bytes - len(marker))
             out = out[:allowed] + marker
@@ -113,13 +113,13 @@ async def get_job(jid: str, request: Request, authorization: str | None = Header
 
 @router.get("/jobs/{jid}/wait")
 async def wait_job(jid: str, request: Request, timeout: int = 25, authorization: str | None = Header(None)):
-    # Status-Long-Poll: wartet bis das Result vorliegt oder der Timeout abläuft - ersetzt das Pollen des Absenders
+    # status long poll: waits until the result arrives or the timeout expires - replaces sender polling
     _own_job(request, jid, authorization)
     timeout = max(1, min(int(timeout), 300))
     deadline = time.monotonic() + timeout
     ev = store.job_done.setdefault(jid, asyncio.Event())
     while True:
-        ev.clear()  # erst zurücksetzen, dann Zustand prüfen: kein verlorenes Aufwecken
+        ev.clear()  # clear first, then check state: no lost wakeup
         j = store.jobs.get(jid)
         if j is None:
             raise HTTPException(status_code=404)
@@ -138,7 +138,7 @@ async def wait_job(jid: str, request: Request, timeout: int = 25, authorization:
 
 
 def usage_data():
-    # Struktur für GET /usage und die API-Doku-Seite der Verwaltung (GET /admin/api/usage, HTTP-Basic-Session)
+    # structure for GET /usage and the admin API docs page (GET /admin/api/usage, HTTP basic session)
     return {
         "service": "agent-sandbox-relay",
         "auth": "Authorization: Bearer <token>; Rollen: Submitter (Jobs einspeisen/abfragen) und Worker (Jobs ziehen/Resultate liefern); alle Endpunkte ausser GET /healthz",
@@ -148,7 +148,7 @@ def usage_data():
             "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/löschen, Jobs anhalten/fortsetzen/löschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD",
         },
         "grenzen": {"cmd_zeichen": config.cmd_zeichen(), "result_output_bytes": config.result_output_bytes(),
-                    "datei_bytes_roh": config.FILEMAX, "job_store": config.job_store_eintraege(),
+                    "datei_bytes_roh": config.datei_bytes_roh(), "job_store": config.job_store_eintraege(),
                     "datei_store": config.datei_store_eintraege(),
                     "speicherbudget_output_dateien": config.budget(),
                     "budget_syntax": "b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (wie mem_limit im Compose-File)",

@@ -1,4 +1,4 @@
-# relay/auth.py - Bearer-Tokens nach Rolle, Admin-Login mit Lockout (elfte Runde; vierzehnte: 401 ohne Basic-Challenge)
+# relay/auth.py - bearer tokens by role, admin login with lockout (11th round; 14th: 401 without basic challenge)
 import asyncio
 import hashlib
 import secrets
@@ -8,8 +8,8 @@ from fastapi import HTTPException
 
 from . import config, store
 
-# Lockout je Peer-IP (hinter Traefik: letzter X-Forwarded-For-Eintrag):
-# ab 5 Fehlversuchen 300 s Sperre, je weiterem Fehlversuch verdoppelt bis 3600 s
+# lockout per peer IP (behind Traefik: last X-Forwarded-For entry):
+# 5 failed attempts -> 300 s lock, each further failure doubles up to 3600 s
 LOCK_FAILS = 5
 LOCK_BASE = 300
 LOCK_MAX = 3600
@@ -17,7 +17,7 @@ _locks: dict = {}  # peer -> [fehlversuche, gesperrt_bis_unix]
 
 
 async def admin_fail_delay():
-    # Brute-Force bremsen; für Stub-Tests austauschbar
+    # slow down brute force; swappable for stub tests
     await asyncio.sleep(0.5)
 
 
@@ -25,7 +25,7 @@ def _peer(request):
     peer = request.client.host if request.client else None
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        # hinter Traefik ist die echte Client-IP der letzte Eintrag
+        # behind Traefik the real client IP is the last entry
         peer = xff.split(",")[-1].strip()
     return peer, xff
 
@@ -44,7 +44,7 @@ def _token_hash(authorization):
 
 
 def auth_bearer(request, authorization, kind):
-    # kind: "worker" (VM-Agent) oder "submitter" (Absender); Token wird nur als Hash geprüft
+    # kind: "worker" (VM agent) or "submitter" (sender); token is only checked as hash
     if not authorization or not authorization.isascii() or not authorization.startswith("Bearer "):
         _auth_fail(request)
     h = _token_hash(authorization)
@@ -55,7 +55,7 @@ def auth_bearer(request, authorization, kind):
 
 
 def auth_any(request, authorization):
-    # beide Rollen (Datei-Endpunkte, /usage); Rückgabe: (Record, Rollenname)
+    # both roles (file endpoints, /usage); returns (record, role name)
     if not authorization or not authorization.isascii() or not authorization.startswith("Bearer "):
         _auth_fail(request)
     h = _token_hash(authorization)
@@ -111,11 +111,11 @@ async def require_admin(request, credentials):
         _register_fail(peer)
         await admin_fail_delay()
         store.audit("admin_auth_fail", peer=peer, xff=xff, modus=mode)
-        # 401 bewusst ohne WWW-Authenticate-Challenge: Der legitime Client (Admin-UI)
-        # meldet sich proaktiv per Authorization-Header an; eine Basic-Challenge löst
-        # in Browsern den nativen Login-Dialog aus, auch bei fetch, bevor das
-        # JavaScript der UI die 401 sieht (Airbyte Issue 78177; SO 86105/9859627;
-        # RFC 7235 formuliert die Challenge nur als SHOULD).
+        # 401 deliberately without WWW-Authenticate challenge: the legitimate client (admin UI)
+        # authenticates proactively via the Authorization header; a basic challenge
+        # triggers the native browser login dialog, even for fetch, before the
+        # UI JavaScript sees the 401 (Airbyte issue 78177; SO 86105/9859627;
+        # RFC 7235 states the challenge only as a SHOULD).
         raise HTTPException(status_code=401)
     _locks.pop(peer, None)  # erfolgreicher Login setzt Zähler und Sperre zurück
     return mode

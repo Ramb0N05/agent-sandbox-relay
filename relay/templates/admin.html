@@ -206,10 +206,22 @@ table.rwd td.cmdcell{font-size:.8rem}
     <div class="row"><button class="primary" id="btn-set-exec">Anzahl speichern</button></div>
   </div>
   <div class="card">
+    <h3 style="margin-top:0">Weitere Grenzen (leeres Feld = unverändert)</h3>
+    <p class="muted" id="set-more-hinweis">-</p>
+    <label class="field">cmd-Zeichenlimit (1-100000) <input id="set-cmd" type="number" min="1" max="100000"></label>
+    <label class="field">Result-Output-Deckel (ab 64k, z.B. 8m) <input id="set-outmax" maxlength="16" placeholder="z.B. 8m"></label>
+    <label class="field">Job-Store-Einträge (1-5000) <input id="set-jobstore" type="number" min="1" max="5000"></label>
+    <label class="field">Datei-Store-Einträge (1-5000) <input id="set-filestore" type="number" min="1" max="5000"></label>
+    <label class="field">Audit-Rotation (64k bis 64m, z.B. 2m) <input id="set-audit" maxlength="16" placeholder="z.B. 2m"></label>
+    <label class="field">Long-Poll Sekunden (0-3600) <input id="set-poll" type="number" min="0" max="3600"></label>
+    <div class="row"><button class="primary" id="btn-set-more">Grenzen speichern</button>
+      <span class="muted">Byte-Angaben wie das Budget: b, k|kb, m|mb, g|gb, ohne Einheit Bytes.</span></div>
+  </div>
+  <div class="card">
     <h3 style="margin-top:0">Nur per Stack-Umgebung änderbar (Compose/Portainer, Neustart nötig)</h3>
     <table id="fixtab" class="rwd"><tbody></tbody></table>
   </div>
-  <p class="muted">Änderungen hier gelten sofort und überleben Neustarts (settings.json im Daten-Verzeichnis). Die fixen Grenzen oben hängen an der Start-Umgebung des Containers.</p>
+  <p class="muted">Änderungen hier gelten sofort und überleben Neustarts (settings.json im Daten-Verzeichnis). Die fixen Grenzen unten hängen an der Start-Umgebung des Containers.</p>
 </section>
 
 </main>
@@ -606,6 +618,16 @@ async function refreshSettings(){
     " - Quelle: " + d.budget_quelle + (d.budget_quelle === "env" ? " (AGENT_SANDBOX_RELAY_BUDGET im Stack)" : "");
   document.getElementById("set-exec").value = d.exec_jobs_shown;
   document.getElementById("set-exec-hinweis").textContent = "Quelle: " + d.exec_quelle;
+  document.getElementById("set-cmd").value = d.cmd_zeichen;
+  document.getElementById("set-outmax").value = d.result_output_bytes_roh;
+  document.getElementById("set-jobstore").value = d.job_store_eintraege;
+  document.getElementById("set-filestore").value = d.datei_store_eintraege;
+  document.getElementById("set-audit").value = d.audit_rotation_bytes_roh;
+  document.getElementById("set-poll").value = d.long_poll_s;
+  document.getElementById("set-more-hinweis").textContent =
+    "Quellen - cmd: " + d.cmd_zeichen_quelle + ", Result: " + d.result_output_bytes_quelle +
+    ", Job-Store: " + d.job_store_eintraege_quelle + ", Datei-Store: " + d.datei_store_eintraege_quelle +
+    ", Audit: " + d.audit_rotation_bytes_quelle + ", Long-Poll: " + d.long_poll_quelle;
   var ft = document.querySelector("#fixtab tbody"); ft.innerHTML = "";
   Object.entries(d.fixe).forEach(function(kv){
     ft.insertAdjacentHTML("beforeend", "<tr><td data-label='" + esc(kv[0]) + "'>" + esc(kv[0]) + "</td><td data-label='Wert' class='mono'>" + esc(String(kv[1])) + "</td></tr>");
@@ -627,6 +649,25 @@ async function saveExec(){
   await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({exec_jobs_shown: n}) });
   toast("Anzeige-Limit gesetzt");
   refreshSettings();
+}
+async function saveMore(){
+  var b = {};
+  var f = function(id){ return document.getElementById(id).value.trim(); };
+  var num = function(id){ var v = parseInt(f(id), 10); return isNaN(v) ? null : v; };
+  if (f("set-cmd") !== "" ){ var v = num("set-cmd"); if (v !== null){ b.cmd_zeichen = v; } }
+  if (f("set-outmax") !== ""){ b.result_output_bytes = f("set-outmax"); }
+  if (f("set-jobstore") !== ""){ var v = num("set-jobstore"); if (v !== null){ b.job_store_eintraege = v; } }
+  if (f("set-filestore") !== ""){ var v = num("set-filestore"); if (v !== null){ b.datei_store_eintraege = v; } }
+  if (f("set-audit") !== ""){ b.audit_rotation_bytes = f("set-audit"); }
+  if (f("set-poll") !== ""){ var v = num("set-poll"); if (v !== null){ b.long_poll_s = v; } }
+  var keys = Object.keys(b);
+  if (!keys.length){ toast("keine Grenze geändert"); return; }
+  var ok = await showConfirm("Grenzen ändern", keys.join(", ") + " setzen? Gilt sofort und überlebt Neustarts.");
+  if (!ok){ return; }
+  await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(b) });
+  toast("Grenzen gesetzt");
+  refreshSettings();
+  refreshStatus();
 }
 
 /* ---------- API-Doku-Seite ---------- */
@@ -673,6 +714,7 @@ document.getElementById("btn-audit-refresh").addEventListener("click", refreshAu
 document.getElementById("audit-limit").addEventListener("change", refreshAudit);
 document.getElementById("btn-set-budget").addEventListener("click", saveBudget);
 document.getElementById("btn-set-exec").addEventListener("click", saveExec);
+document.getElementById("btn-set-more").addEventListener("click", saveMore);
 document.getElementById("dlg-cmd-close").addEventListener("click", function(){ dlgCmd.close(); });
 document.getElementById("dlg-token-close").addEventListener("click", function(){ dlgToken.close(); });
 document.getElementById("dlg-token-copy").addEventListener("click", function(){

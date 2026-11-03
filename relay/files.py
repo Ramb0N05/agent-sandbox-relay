@@ -32,7 +32,7 @@ async def upload_file(request: Request, authorization: str | None = Header(None)
     store.data_bytes += len(enc)
     fid = "f" + uuid.uuid4().hex[:12]
     store.files[fid] = {"id": fid, "enc": enc, "size": len(raw), "size_enc": len(enc), "ts": time.time()}
-    if len(store.files) > config.FILESTOREMAX:
+    if len(store.files) > config.datei_store_eintraege():
         _, old = store.files.popitem(last=False)  # Begrenzung: älteste Dateien zuerst raus
         store.data_bytes -= len(old["enc"])
         store.audit("evict", ursache="datei_store_voll", entfernt=[{"kind": "file", "id": old["id"]}])

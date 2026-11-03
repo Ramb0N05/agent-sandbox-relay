@@ -34,14 +34,14 @@ def _load_token():
 
 TOKEN = _load_token()
 ENDPOINT = "https://<agent-sandbox-relay-domain>"
-POLL_TIMEOUT = 310  # Client-Deckel knapp ueber dem serverseitigen Long-Poll (300 s)
-CMAX = 900  # Ausfuehrungs-Deckel je Job (Sekunden)
+POLL_TIMEOUT = 310  # Client-Deckel knapp über dem serverseitigen Long-Poll (300 s)
+CMAX = 900  # Ausführungs-Deckel je Job (Sekunden)
 OUTMAX = 8 * 1024 * 1024  # Output-Deckel 8 MiB (Abschnitt 10.7)
-FILEMAX = 8 * 1024 * 1024  # Roh-Groesse pro Datei im Datei-Store (Abschnitt 10.8)
+FILEMAX = 8 * 1024 * 1024  # Roh-Größe pro Datei im Datei-Store (Abschnitt 10.8)
 
 
 class Relay:
-    # persistente Verbindung: http.client uebernimmt Keep-Alive, Reconnect mit einem Retry
+    # persistente Verbindung: http.client übernimmt Keep-Alive, Reconnect mit einem Retry
     def __init__(self, endpoint, token, timeout=POLL_TIMEOUT):
         u = urlsplit(endpoint)
         self.host = u.hostname
@@ -60,7 +60,7 @@ class Relay:
             self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
 
     def _request(self, method, path, body=None, headers=None, retry=True):
-        # ein Versuch ueber die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
+        # ein Versuch über die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
         if self.conn is None:
             self._connect()
         h = {"Authorization": "Bearer " + self.token, "User-Agent": "agent-sandbox-agent"}
@@ -110,7 +110,7 @@ class Relay:
         return 0
 
     def send_file(self, path):
-        # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn ueber FILEMAX
+        # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn über FILEMAX
         try:
             with open(path, "rb") as f:
                 data = f.read(FILEMAX + 1)
@@ -126,7 +126,7 @@ class Relay:
 
 
 def run_cmd(cmd):
-    # Ausfuehrung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
+    # Ausführung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
     try:
         p = subprocess.run(["timeout", str(CMAX), "bash", "-lc", cmd],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -140,7 +140,7 @@ def run_cmd(cmd):
 
 
 def execute(cmd, relay):
-    # Praefixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
+    # Präfixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
     if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
         _, fid, target = cmd.split(" ", 2)
         rc = relay.fetch_file(fid, target)
@@ -155,7 +155,7 @@ def execute(cmd, relay):
 
 
 def poll_once(relay):
-    # ein Zyklus: Long-Poll, Ausfuehrung, Result; None bei Leerlauf (kein Sleep noetig)
+    # ein Zyklus: Long-Poll, Ausführung, Result; None bei Leerlauf (kein Sleep nötig)
     j = relay.next_job()
     if j is None:
         return None

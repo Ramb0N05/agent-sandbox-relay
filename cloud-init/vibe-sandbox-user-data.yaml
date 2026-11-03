@@ -18,6 +18,7 @@ write_files:
   - path: /usr/local/bin/agent-sandbox-agent
     owner: vibe:vibe
     permissions: '0700'
+    defer: true
     content: |
       #!/usr/bin/env bash
       # Transportoption E: Pull-Agent gegen die Job-Queue (Docker-Service agent-sandbox-relay) auf dem Hetzner-Server (Abschnitt 10.5)
@@ -98,8 +99,8 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - systemctl disable --now sshd
-  - growpart /dev/vda 1
-  - resize2fs /dev/vda1
+  - growpart /dev/vda 3
+  - btrfs filesystem resize max /
   - systemctl daemon-reload
   - systemctl enable --now agent-sandbox-agent.service
   - systemctl enable --now ttyd-vibe.service

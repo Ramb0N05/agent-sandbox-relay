@@ -13,12 +13,17 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   (User vibe mit NOPASSWD-sudo, Pakete, write_files, runcmd). Auf dem Host
   unter /root/vibe-sandbox-user-data.yaml ablegen; virt-install haengt sie
   als NoCloud-ISO nur beim ersten Boot an.
-- files/agent-sandbox-agent: Pull-Agent (bash; Long-Poll gegen die Queue,
-  Ausfuehrung mit timeout 900 bash -lc als User vibe, Praefixe VIBE_FETCH
-  und VIBE_SEND fuer den Datei-Transport ueber die Files-Endpunkte).
+- files/agent-sandbox-agent: Pull-Agent (elfte Runde: Python statt bash;
+  Long-Poll gegen die Queue mit persistenter HTTP-Verbindung und einem
+  Reconnect-Retry je Aufruf statt einem curl-Prozess je Request, kein
+  Leerlauf-Sleep - /jobs/next blockiert serverseitig, sleep 1 nur im
+  Fehlerfall; Ausfuehrung mit timeout 900 bash -lc als User vibe,
+  Praefixe VIBE_FETCH und VIBE_SEND fuer den Datei-Transport ueber die
+  Files-Endpunkte; ssl-Default-Kontext mit Zertifikatspruefung).
   Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner
   vibe:vibe, 0700. Normalfall ist die Provisionierung ueber die
-  cloud-init-Datei; die Einzeldatei ist die Referenzkopie.
+  cloud-init-Datei (Paket python3 in der Paketliste); die Einzeldatei ist
+  die Referenzkopie.
 - files/agent-sandbox-agent.service: systemd-Unit des Pull-Agents
   (Restart=always), Ziel /etc/systemd/system/.
 - files/ttyd-vibe.service: systemd-Unit des Web-Terminals (nur vom Host
@@ -33,9 +38,10 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 
 - <agent-sandbox-relay-worker-token> in cloud-init und files/agent-sandbox-agent:
   Worker-Token der VM (Rolle worker). Erstellung ueber die
-  Verwaltungsoberflaeche des Relays (GET /admin, Login mit Nutzername
-  admin und AGENT_SANDBOX_ADMIN_PASSWORD; das Token wird nur einmal bei
-  der Erstellung angezeigt). Solange keine echten Tokens existieren,
+  Verwaltungsoberflaeche des Relays (GET /admin, Login mit
+  AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD; das
+  Token wird nur einmal bei der Erstellung angezeigt, Namen sind optional
+  und nachtraeglich umbenennbar). Solange keine echten Tokens existieren,
   arbeitet das Legacy-Token aus AGENT_SANDBOX_RELAY_TOKEN im Docker-Stack
   als Worker- und Submit-Token weiter (Migration beim Serverstart).
 - <agent-sandbox-relay-domain> in cloud-init und files/agent-sandbox-agent:

@@ -1,50 +1,158 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 # Transportoption E: Pull-Agent gegen die Job-Queue (Docker-Service agent-sandbox-relay) auf dem Hetzner-Server (Abschnitt 10.5)
+# Elfte Runde: persistente HTTP-Verbindung (kein curl-Prozess je Aufruf), kein Leerlauf-Sleep
+# (der Long-Poll von /jobs/next blockiert serverseitig; sleep nur im Fehlerfall).
 # Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
 # (provisioniert normalerweise per cloud-init, siehe cloud-init/vibe-sandbox-user-data.yaml)
-set -u
-# Worker-Token (Rolle worker) des Relays; Erstellung ueber die Verwaltungsoberflaeche (GET /admin, Login admin)
-TOKEN="<agent-sandbox-relay-worker-token>"
-ENDPOINT="https://<agent-sandbox-relay-domain>"
-OUTMAX=8388608
-CMAX=900
-while true; do
-  resp=$(curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" "$ENDPOINT/jobs/next" 2>/dev/null || true)
-  if [ -n "$resp" ]; then
-    id=$(jq -r '.id // empty' <<< "$resp")
-    cmd=$(jq -r '.cmd // empty' <<< "$resp")
-    if [ -n "$id" ] && [ -n "$cmd" ]; then
-      case "$cmd" in
-        "VIBE_FETCH "*)
-          read -r tag fid target <<< "$cmd"
-          timeout $CMAX curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" -o "$target" "$ENDPOINT/files/$fid"
-          rc=$?
-          out="VIBE_FETCH id=$fid target=$target rc=$rc"
-          ;;
-        "VIBE_SEND "*)
-          read -r tag path <<< "$cmd"
-          sresp=$(timeout $CMAX curl -sS --max-time 310 -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" --data-binary @"$path" "$ENDPOINT/files" 2>&1)
-          rc=$?
-          newid=$(printf '%s' "$sresp" | jq -r '.id // empty' 2>/dev/null)
-          if [ -n "$newid" ]; then
-            out="VIBE_SEND id=$newid size=$(printf '%s' "$sresp" | jq -r '.size // empty')"
-          else
-            out="VIBE_SEND fehlgeschlagen rc=$rc $(printf '%s' "$sresp" | head -c 200)"
-            rc=1
-          fi
-          ;;
-        *)
-          out=$(timeout $CMAX bash -lc "$cmd" 2>&1); rc=$?
-          ;;
-      esac
-      printf '%s' "$out" | head -c $OUTMAX > /tmp/agent-sandbox-out
-      jq -n --arg id "$id" --arg rc "$rc" --rawfile out /tmp/agent-sandbox-out \
-        '{id:$id, rc:($rc|tonumber), output:$out}' \
-      | curl -sS --max-time 60 -H "Authorization: Bearer $TOKEN" \
-          -H "Content-Type: application/json" --data-binary @- \
-          "$ENDPOINT/jobs/$id/result" >/dev/null || true
-      rm -f /tmp/agent-sandbox-out
-    fi
-  fi
-  sleep 1
-done
+import http.client
+import json
+import ssl
+import subprocess
+import sys
+import time
+from urllib.parse import urlsplit
+
+TOKEN = "<agent-sandbox-relay-worker-token>"
+ENDPOINT = "https://<agent-sandbox-relay-domain>"
+POLL_TIMEOUT = 310  # Client-Deckel knapp ueber dem serverseitigen Long-Poll (300 s)
+CMAX = 900  # Ausfuehrungs-Deckel je Job (Sekunden)
+OUTMAX = 8 * 1024 * 1024  # Output-Deckel 8 MiB (Abschnitt 10.7)
+FILEMAX = 8 * 1024 * 1024  # Roh-Groesse pro Datei im Datei-Store (Abschnitt 10.8)
+
+
+class Relay:
+    # persistente Verbindung: http.client uebernimmt Keep-Alive, Reconnect mit einem Retry
+    def __init__(self, endpoint, token, timeout=POLL_TIMEOUT):
+        u = urlsplit(endpoint)
+        self.host = u.hostname
+        self.port = u.port or (443 if u.scheme == "https" else 80)
+        self.scheme = u.scheme
+        self.path = u.path.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+        self.ctx = ssl.create_default_context() if u.scheme == "https" else None
+        self.conn = None
+
+    def _connect(self):
+        if self.scheme == "https":
+            self.conn = http.client.HTTPSConnection(self.host, self.port, timeout=self.timeout, context=self.ctx)
+        else:
+            self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+
+    def _request(self, method, path, body=None, headers=None, retry=True):
+        # ein Versuch ueber die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
+        if self.conn is None:
+            self._connect()
+        h = {"Authorization": "Bearer " + self.token, "User-Agent": "agent-sandbox-agent"}
+        if headers:
+            h.update(headers)
+        try:
+            self.conn.request(method, self.path + path, body=body, headers=h)
+            resp = self.conn.getresponse()
+            data = resp.read()
+            return resp.status, data
+        except (http.client.HTTPException, OSError):
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = None
+            if retry:
+                return self._request(method, path, body=body, headers=headers, retry=False)
+            raise
+
+    def next_job(self):
+        # {"id": ..., "cmd": ...} oder None bei 204 (Long-Poll blockiert serverseitig)
+        status, data = self._request("GET", "/jobs/next")
+        if status == 204:
+            return None
+        if status != 200:
+            raise RuntimeError("jobs/next: HTTP %d" % status)
+        j = json.loads(data.decode("utf-8"))
+        if not isinstance(j, dict) or not j.get("id") or not j.get("cmd"):
+            return None
+        return j
+
+    def post_result(self, jid, output, rc):
+        body = json.dumps({"id": jid, "rc": int(rc), "output": output}).encode("utf-8")
+        status, _ = self._request("POST", "/jobs/%s/result" % jid, body=body,
+                                  headers={"Content-Type": "application/json"})
+        if status != 200:
+            raise RuntimeError("result: HTTP %d" % status)
+
+    def fetch_file(self, fid, target):
+        # Datei aus dem Relay-Datei-Store in die VM; rc = HTTP-Status (200 -> 0)
+        status, data = self._request("GET", "/files/%s" % fid)
+        if status != 200:
+            return status
+        with open(target, "wb") as f:
+            f.write(data)
+        return 0
+
+    def send_file(self, path):
+        # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn ueber FILEMAX
+        try:
+            with open(path, "rb") as f:
+                data = f.read(FILEMAX + 1)
+        except OSError:
+            return 1, None
+        if len(data) > FILEMAX:
+            return 1, None
+        status, resp = self._request("POST", "/files", body=data,
+                                     headers={"Content-Type": "application/octet-stream"})
+        if status != 200:
+            return status, None
+        return 0, json.loads(resp.decode("utf-8"))
+
+
+def run_cmd(cmd):
+    # Ausfuehrung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
+    try:
+        p = subprocess.run(["timeout", str(CMAX), "bash", "-lc", cmd],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=CMAX + 30)
+        rc = p.returncode
+        out = p.stdout.decode("utf-8", "replace")
+    except subprocess.TimeoutExpired as e:
+        rc = 124
+        out = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else str(e.stdout or "")
+    return rc, out[:OUTMAX]
+
+
+def execute(cmd, relay):
+    # Praefixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
+    if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
+        _, fid, target = cmd.split(" ", 2)
+        rc = relay.fetch_file(fid, target)
+        return rc, "VIBE_FETCH id=%s target=%s rc=%d" % (fid, target, rc)
+    if cmd.startswith("VIBE_SEND ") and len(cmd.split(" ", 1)) == 2:
+        _, path = cmd.split(" ", 1)
+        rc, info = relay.send_file(path)
+        if rc != 0 or not info:
+            return (rc if rc else 1), "VIBE_SEND fehlgeschlagen rc=%d" % rc
+        return 0, "VIBE_SEND id=%s size=%d" % (info["id"], info["size"])
+    return run_cmd(cmd)
+
+
+def poll_once(relay):
+    # ein Zyklus: Long-Poll, Ausfuehrung, Result; None bei Leerlauf (kein Sleep noetig)
+    j = relay.next_job()
+    if j is None:
+        return None
+    rc, out = execute(j["cmd"], relay)
+    relay.post_result(j["id"], out, rc)
+    return j["id"]
+
+
+def main():
+    relay = Relay(ENDPOINT, TOKEN)
+    while True:
+        try:
+            poll_once(relay)
+        except Exception as e:
+            print("agent-fehler:", e, file=sys.stderr)
+            time.sleep(1)  # nur im Fehlerfall; im Leerlauf blockiert der Long-Poll
+
+
+if __name__ == "__main__":
+    main()

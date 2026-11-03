@@ -12,12 +12,14 @@ router = APIRouter()
 
 
 class Job(BaseModel):
-    cmd: str = Field(max_length=10000)  # Längenlimit; Verstoss -> 422
+    cmd: str = Field(max_length=config.CMD_ZEICHEN_HARD)  # absolute Kappe; das einstellbare Limit prüft submit
 
 
 @router.post("/jobs")
 async def submit(job: Job, request: Request, authorization: str | None = Header(None)):
     sub = auth.auth_bearer(request, authorization, "submitter")
+    if len(job.cmd) > config.cmd_zeichen():  # einstellbares Limit (Standard 10000), 422 bei Überschreitung
+        raise HTTPException(status_code=422, detail="cmd zu lang: %d Zeichen, Limit %d (einstellbar über /admin/api/settings, Feld cmd_zeichen)" % (len(job.cmd), config.cmd_zeichen()))
     w = next((w for w in store.workers if w["id"] == sub["worker_id"]), None)
     if w is None:
         raise HTTPException(status_code=409, detail="zugeordneter Worker existiert nicht mehr")
@@ -25,7 +27,7 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
     store.jobs[jid] = {"id": jid, "cmd": job.cmd, "status": "queued", "output": None, "rc": None,
                        "ts": time.time(), "worker_id": w["id"], "worker": w["name"],
                        "submitter_id": sub["id"], "submitter": sub["name"]}
-    if len(store.jobs) > config.JOBSTOREMAX:
+    if len(store.jobs) > config.job_store_eintraege():
         _, old = store.jobs.popitem(last=False)  # Begrenzung: älteste Jobs zuerst raus
         if old.get("output") is not None:
             store.data_bytes -= len(old["output"])
@@ -77,8 +79,8 @@ async def post_result(jid: str, body: dict, request: Request, authorization: str
         raise HTTPException(status_code=403)
     out = body.get("output")
     if isinstance(out, str):
-        if len(out) > config.OUTMAX:
-            out = out[:config.OUTMAX]  # Output-Deckel auch serverseitig
+        if len(out) > config.result_output_bytes():
+            out = out[:config.result_output_bytes()]  # Output-Deckel auch serverseitig (einstellbar)
         store._evict_for(len(out))
         budget = config.budget()
         if store.data_bytes + len(out) > budget:  # Einzelresult größer als Restbudget: kürzen statt OOM
@@ -145,9 +147,9 @@ def usage_data():
             "worker": "Worker-Token: GET /jobs/next, POST /jobs/<id>/result, Datei-Endpunkte",
             "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/löschen, Jobs anhalten/fortsetzen/löschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD",
         },
-        "grenzen": {"cmd_zeichen": 10000, "result_output_bytes": config.OUTMAX,
-                    "datei_bytes_roh": config.FILEMAX, "job_store": config.JOBSTOREMAX,
-                    "datei_store": config.FILESTOREMAX,
+        "grenzen": {"cmd_zeichen": config.cmd_zeichen(), "result_output_bytes": config.result_output_bytes(),
+                    "datei_bytes_roh": config.FILEMAX, "job_store": config.job_store_eintraege(),
+                    "datei_store": config.datei_store_eintraege(),
                     "speicherbudget_output_dateien": config.budget(),
                     "budget_syntax": "b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (wie mem_limit im Compose-File)",
                     "long_poll_s": config.poll_seconds(), "wait_s_max": 300},
@@ -176,8 +178,8 @@ def usage_data():
             "DELETE /admin/api/jobs/<id>": "Job löschen (jeder Status; Budget wird bei erledigten Jobs zurückgegeben)",
             "GET /admin/api/audit": "Protokoll (neueste zuerst)",
             "GET /admin/api/state": "Budget/Jobs/Dateien/Zähler",
-            "GET /admin/api/settings": "zentrale Einstellungen: Budget und Anzeige-Limit änderbar, weitere Grenzen nur per Stack-Umgebung",
-            "POST /admin/api/settings": "Einstellungen ändern {budget: Env-Syntax, exec_jobs_shown: 1-500}; wirksam sofort und in settings.json dauerhaft",
+            "GET /admin/api/settings": "zentrale Einstellungen: Budget, Anzeige-Limit, cmd-Länge, Result-Deckel, Store-Größen, Audit-Rotation und Long-Poll änderbar; nur Datei-Deckel und Nutzername sind Stack-fest",
+            "POST /admin/api/settings": "Einstellungen ändern {budget: Env-Syntax, exec_jobs_shown: 1-500, cmd_zeichen: 1-100000, result_output_bytes: Env-Syntax ab 64k bis Budget, job_store_eintraege: 1-5000, datei_store_eintraege: 1-5000, audit_rotation_bytes: 64k-64m, long_poll_s: 0-3600}; wirksam sofort und in settings.json dauerhaft",
             "GET /admin/api/usage": "diese Dokumentation mit der Admin-Session (HTTP Basic) statt Bearer-Token",
         },
         "dateitransfer": {

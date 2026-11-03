@@ -69,7 +69,9 @@ def budget():
 
 
 def poll_seconds():
-    # Long-Poll-Dauer von /jobs/next (Env nur für Tests verkürzbar)
+    # Long-Poll-Dauer von /jobs/next (Override vor Env; Env nur für Tests verkürzbar)
+    if "long_poll_s" in _overrides:
+        return max(0, int(_overrides["long_poll_s"]))
     try:
         return max(0, int(os.environ.get("AGENT_SANDBOX_RELAY_POLL", "300")))
     except ValueError:
@@ -84,6 +86,48 @@ def exec_jobs_shown():
         return max(1, int(os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")))
     except ValueError:
         return 64
+
+
+# siebzehnte Runde: weitere einstellbare Grenzen - Override aus settings.json vor dem
+# Default (Cmd-Länge, Store-Größen, Result-Deckel, Audit-Rotation, Long-Poll).
+# Fix bleiben: datei_bytes_roh (FILEMAX, 413-Validierung beim Upload) und der
+# Admin-Nutzername - beide hängen an der Start-Umgebung des Containers.
+CMD_ZEICHEN_HARD = 100000  # absolute Pydantic-Kappe für Job-cmd; das einstellbare Limit prüft submit
+
+
+def cmd_zeichen():
+    # Maximale Länge eines Job-cmd (das Listing zeigt ihn unabhängig davon gekürzt)
+    if "cmd_zeichen" in _overrides:
+        return _overrides["cmd_zeichen"]
+    return 10000
+
+
+def result_output_bytes():
+    # Deckel für Job-Output im Store; das Budget muss darüber bleiben
+    if "result_output_bytes" in _overrides:
+        return _overrides["result_output_bytes"]
+    return OUTMAX
+
+
+def job_store_eintraege():
+    # Einträge im Job-Store (FIFO, älteste zuerst raus)
+    if "job_store_eintraege" in _overrides:
+        return _overrides["job_store_eintraege"]
+    return JOBSTOREMAX
+
+
+def datei_store_eintraege():
+    # Einträge im Datei-Store (FIFO, älteste zuerst raus)
+    if "datei_store_eintraege" in _overrides:
+        return _overrides["datei_store_eintraege"]
+    return FILESTOREMAX
+
+
+def audit_rotation_bytes():
+    # Audit-Rotationsschwelle: ab dieser Größe auf genau ein Backup .1
+    if "audit_rotation_bytes" in _overrides:
+        return _overrides["audit_rotation_bytes"]
+    return AUDITMAX
 
 
 # Speichergrenze des Containers (docker mem_limit), siebzwehnte Runde:

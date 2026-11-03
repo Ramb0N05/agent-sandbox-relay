@@ -34,9 +34,16 @@ class TokenAssign(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    # Einstellungsseite (sechzehnte Runde): Budget in Env-Syntax (b/kb/mb/gb), Anzeige-Limit 1..500
+    # Einstellungsseite (siebzehnte Runde): Budget und Byte-Grenzen in Env-Syntax (b/kb/mb/gb),
+    # Zahlen-Limits mit Bereichsprüfung im Endpunkt
     budget: str | None = Field(default=None, max_length=16)
     exec_jobs_shown: int | None = None
+    cmd_zeichen: int | None = None
+    result_output_bytes: str | None = Field(default=None, max_length=16)
+    job_store_eintraege: int | None = None
+    datei_store_eintraege: int | None = None
+    audit_rotation_bytes: str | None = Field(default=None, max_length=16)
+    long_poll_s: int | None = None
 
 
 def _auto_name(prefix):
@@ -67,10 +74,9 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
 
 @router.get("/admin/api/settings")
 async def admin_settings(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # Einstellungsseite: änderbare Werte (Budget, Anzeige-Limit) plus Start-umweltfixe Grenzen
+    # Einstellungsseite: alle änderbaren Werte mit Quelle (datei|env|default) plus Stack-feste Grenzen
     await auth.require_admin(request, credentials)
     budget_raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", config.DEFAULT_BUDGET)
-    exec_raw = os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")
     return {
         "budget": config.budget(),
         "budget_max": config.budget_max(),
@@ -81,17 +87,25 @@ async def admin_settings(request: Request, credentials: HTTPBasicCredentials | N
         "data_bytes": store.data_bytes,
         "exec_jobs_shown": config.exec_jobs_shown(),
         "exec_quelle": "datei" if config.get_override("exec_jobs_shown") is not None else ("env" if "AGENT_SANDBOX_EXECJOBSSHOWN" in os.environ else "default"),
+        "cmd_zeichen": config.cmd_zeichen(),
+        "cmd_zeichen_quelle": "datei" if config.get_override("cmd_zeichen") is not None else "default",
+        "result_output_bytes": config.result_output_bytes(),
+        "result_output_bytes_roh": store.settings_raw("result_output_bytes") if config.get_override("result_output_bytes") is not None else "8m",
+        "result_output_bytes_quelle": "datei" if config.get_override("result_output_bytes") is not None else "default",
+        "job_store_eintraege": config.job_store_eintraege(),
+        "job_store_eintraege_quelle": "datei" if config.get_override("job_store_eintraege") is not None else "default",
+        "datei_store_eintraege": config.datei_store_eintraege(),
+        "datei_store_eintraege_quelle": "datei" if config.get_override("datei_store_eintraege") is not None else "default",
+        "audit_rotation_bytes": config.audit_rotation_bytes(),
+        "audit_rotation_bytes_roh": store.settings_raw("audit_rotation_bytes") if config.get_override("audit_rotation_bytes") is not None else "2m",
+        "audit_rotation_bytes_quelle": "datei" if config.get_override("audit_rotation_bytes") is not None else "default",
+        "long_poll_s": config.poll_seconds(),
+        "long_poll_quelle": "datei" if config.get_override("long_poll_s") is not None else ("env" if "AGENT_SANDBOX_RELAY_POLL" in os.environ else "default"),
         "fixe": {
-            "cmd_zeichen": 10000,
-            "result_output_bytes": config.OUTMAX,
             "datei_bytes_roh": config.FILEMAX,
-            "datei_store_eintraege": config.FILESTOREMAX,
-            "job_store_eintraege": config.JOBSTOREMAX,
-            "audit_rotation_bytes": config.AUDITMAX,
-            "long_poll_s": 300,
             "admin_nutzername": config.ADMIN_USERNAME,
         },
-        "hinweis_env": "cmd_zeichen, Result-Output, Datei-Deckel, Store-Grenzen, Long-Poll und Nutzername stehen nur als Stack-Umgebung (Compose/Portainer) zur Verfügung; Änderungen brauchen einen Neustart des Services.",
+        "hinweis_env": "Nur der Datei-Deckel (datei_bytes_roh) und der Admin-Nutzername stehen als Stack-Umgebung fest (Neustart nötig); alle anderen Werte sind hier änderbar.",
     }
 
 
@@ -99,33 +113,87 @@ async def admin_settings(request: Request, credentials: HTTPBasicCredentials | N
 async def admin_settings_update(body: SettingsUpdate, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
     await auth.require_admin(request, credentials)
     changed = {}
+    cand_budget = None
     if body.budget is not None:
         raw = body.budget.strip()
         try:
-            v = config.parse_size(raw)
+            cand_budget = config.parse_size(raw)
         except ValueError:
             raise HTTPException(status_code=422, detail="Budget ungültig. Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)")
-        if v < config.OUTMAX:
-            raise HTTPException(status_code=422, detail="Budget unter dem Output-Deckel (%d Bytes) macht die Queue unbrauchbar" % config.OUTMAX)
-        bmax = config.budget_max()
-        if bmax is not None and v > bmax:
-            raise HTTPException(status_code=422, detail="Budget (%d Bytes) über dem Maximum (%d Bytes): Container-Speichergrenze (%s) minus 64 MiB Headroom - knappere Werte verhindern den Kernel-OOM-Kill des Containers (Exit 137)" % (v, bmax, "unbegrenzt" if config.mem_limit() is None else "%d Bytes" % config.mem_limit()))
-        if v < store.data_bytes:
-            raise HTTPException(status_code=409, detail="Budget (%d Bytes) liegt unter dem aktuell belegten Speicher (%d Bytes) - erst Jobs oder Dateien löschen" % (v, store.data_bytes))
         changed["budget"] = raw
+    cand_out = None
+    if body.result_output_bytes is not None:
+        raw = body.result_output_bytes.strip()
+        try:
+            cand_out = config.parse_size(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="result_output_bytes ungültig. Syntax wie das Budget: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 8m)")
+        changed["result_output_bytes"] = raw
+    # Budget und Output-Deckel kreuzweise prüfen: Budget >= Deckel, Deckel >= 64k, Deckel <= Budget
+    eff_out = cand_out if cand_out is not None else config.result_output_bytes()
+    eff_budget = cand_budget if cand_budget is not None else config.budget()
+    if cand_budget is not None:
+        if cand_budget < eff_out:
+            raise HTTPException(status_code=422, detail="Budget (%d Bytes) unter dem Output-Deckel (%d Bytes) macht die Queue unbrauchbar" % (cand_budget, eff_out))
+        bmax = config.budget_max()
+        if bmax is not None and cand_budget > bmax:
+            raise HTTPException(status_code=422, detail="Budget (%d Bytes) über dem Maximum (%d Bytes): Container-Speichergrenze (%s) minus 64 MiB Headroom - knappere Werte verhindern den Kernel-OOM-Kill des Containers (Exit 137)" % (cand_budget, bmax, "unbegrenzt" if config.mem_limit() is None else "%d Bytes" % config.mem_limit()))
+        if cand_budget < store.data_bytes:
+            raise HTTPException(status_code=409, detail="Budget (%d Bytes) liegt unter dem aktuell belegten Speicher (%d Bytes) - erst Jobs oder Dateien löschen" % (cand_budget, store.data_bytes))
+    if cand_out is not None:
+        if cand_out < 65536:
+            raise HTTPException(status_code=422, detail="result_output_bytes unter 64k (%d Bytes) - Resultate brauchen Raum für Meldungen" % cand_out)
+        if cand_out > eff_budget:
+            raise HTTPException(status_code=422, detail="result_output_bytes (%d Bytes) über dem Budget (%d Bytes) - jedes Result muss ins Budget passen" % (cand_out, eff_budget))
     if body.exec_jobs_shown is not None:
-        n = int(body.exec_jobs_shown)
-        if not 1 <= n <= 500:
+        if not 1 <= body.exec_jobs_shown <= 500:
             raise HTTPException(status_code=422, detail="erledigte Jobs je Submitter: 1 bis 500")
-        changed["exec_jobs_shown"] = n
+        changed["exec_jobs_shown"] = body.exec_jobs_shown
+    if body.cmd_zeichen is not None:
+        if not 1 <= body.cmd_zeichen <= config.CMD_ZEICHEN_HARD:
+            raise HTTPException(status_code=422, detail="cmd-Zeichenlimit: 1 bis %d" % config.CMD_ZEICHEN_HARD)
+        changed["cmd_zeichen"] = body.cmd_zeichen
+    if body.job_store_eintraege is not None:
+        if not 1 <= body.job_store_eintraege <= 5000:
+            raise HTTPException(status_code=422, detail="Job-Store-Einträge: 1 bis 5000")
+        changed["job_store_eintraege"] = body.job_store_eintraege
+    if body.datei_store_eintraege is not None:
+        if not 1 <= body.datei_store_eintraege <= 5000:
+            raise HTTPException(status_code=422, detail="Datei-Store-Einträge: 1 bis 5000")
+        changed["datei_store_eintraege"] = body.datei_store_eintraege
+    if body.audit_rotation_bytes is not None:
+        raw = body.audit_rotation_bytes.strip()
+        try:
+            v = config.parse_size(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="audit_rotation_bytes ungültig. Syntax wie das Budget: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 2m)")
+        if not 65536 <= v <= 64 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="Audit-Rotation: 64k bis 64m (%d Bytes ist ausserhalb)" % v)
+        changed["audit_rotation_bytes"] = raw
+    if body.long_poll_s is not None:
+        if not 0 <= body.long_poll_s <= 3600:
+            raise HTTPException(status_code=422, detail="Long-Poll: 0 bis 3600 Sekunden")
+        changed["long_poll_s"] = body.long_poll_s
     if not changed:
-        raise HTTPException(status_code=422, detail="kein Feld gesetzt (budget, exec_jobs_shown)")
+        raise HTTPException(status_code=422, detail="kein Feld gesetzt (budget, exec_jobs_shown, cmd_zeichen, result_output_bytes, job_store_eintraege, datei_store_eintraege, audit_rotation_bytes, long_poll_s)")
     values = store.settings_all()
     values.update(changed)
     if "budget" in values:
         config.set_override("budget", config.parse_size(values["budget"]))
     if "exec_jobs_shown" in values:
         config.set_override("exec_jobs_shown", int(values["exec_jobs_shown"]))
+    if "cmd_zeichen" in values:
+        config.set_override("cmd_zeichen", int(values["cmd_zeichen"]))
+    if "result_output_bytes" in values:
+        config.set_override("result_output_bytes", config.parse_size(values["result_output_bytes"]))
+    if "job_store_eintraege" in values:
+        config.set_override("job_store_eintraege", int(values["job_store_eintraege"]))
+    if "datei_store_eintraege" in values:
+        config.set_override("datei_store_eintraege", int(values["datei_store_eintraege"]))
+    if "audit_rotation_bytes" in values:
+        config.set_override("audit_rotation_bytes", config.parse_size(values["audit_rotation_bytes"]))
+    if "long_poll_s" in values:
+        config.set_override("long_poll_s", int(values["long_poll_s"]))
     store.save_settings(values)
     store.audit("settings_change", **changed)
     return {"ok": True, "budget": config.budget(), "exec_jobs_shown": config.exec_jobs_shown(),

@@ -34,7 +34,7 @@ def audit(event, **fields):
         d = config.data_dir()
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, "audit.jsonl")
-        if os.path.exists(p) and os.stat(p).st_size > config.AUDITMAX:
+        if os.path.exists(p) and os.stat(p).st_size > config.audit_rotation_bytes():
             os.replace(p, p + ".1")  # Rotation: ein Backup behalten
         line = json.dumps({"ts": _now(), "event": event, **fields}, ensure_ascii=True)
         with open(p, "a", encoding="utf-8") as f:
@@ -112,6 +112,56 @@ def load_settings():
         if not 1 <= n <= 500:
             raise SystemExit("Einstellungs-Speicher: exec_jobs_shown ausserhalb 1..500: %r" % (d["exec_jobs_shown"],))
         config.set_override("exec_jobs_shown", n)
+    if "cmd_zeichen" in d:
+        try:
+            n = int(d["cmd_zeichen"])
+        except (TypeError, ValueError):
+            raise SystemExit("Einstellungs-Speicher: cmd_zeichen keine Zahl: %r" % (d["cmd_zeichen"],))
+        if not 1 <= n <= config.CMD_ZEICHEN_HARD:
+            raise SystemExit("Einstellungs-Speicher: cmd_zeichen ausserhalb 1..%d: %r" % (config.CMD_ZEICHEN_HARD, d["cmd_zeichen"]))
+        config.set_override("cmd_zeichen", n)
+    if "result_output_bytes" in d:
+        try:
+            v = config.parse_size(d["result_output_bytes"])
+        except ValueError as e:
+            raise SystemExit("Einstellungs-Speicher: result_output_bytes ungültig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["result_output_bytes"], e))
+        if v < 65536:
+            raise SystemExit("Einstellungs-Speicher: result_output_bytes unter 64k: %r" % (d["result_output_bytes"],))
+        if v > config.budget():
+            raise SystemExit("Einstellungs-Speicher: result_output_bytes über dem Budget (%d Bytes): %d" % (config.budget(), v))
+        config.set_override("result_output_bytes", v)
+    if "job_store_eintraege" in d:
+        try:
+            n = int(d["job_store_eintraege"])
+        except (TypeError, ValueError):
+            raise SystemExit("Einstellungs-Speicher: job_store_eintraege keine Zahl: %r" % (d["job_store_eintraege"],))
+        if not 1 <= n <= 5000:
+            raise SystemExit("Einstellungs-Speicher: job_store_eintraege ausserhalb 1..5000: %r" % (d["job_store_eintraege"],))
+        config.set_override("job_store_eintraege", n)
+    if "datei_store_eintraege" in d:
+        try:
+            n = int(d["datei_store_eintraege"])
+        except (TypeError, ValueError):
+            raise SystemExit("Einstellungs-Speicher: datei_store_eintraege keine Zahl: %r" % (d["datei_store_eintraege"],))
+        if not 1 <= n <= 5000:
+            raise SystemExit("Einstellungs-Speicher: datei_store_eintraege ausserhalb 1..5000: %r" % (d["datei_store_eintraege"],))
+        config.set_override("datei_store_eintraege", n)
+    if "audit_rotation_bytes" in d:
+        try:
+            v = config.parse_size(d["audit_rotation_bytes"])
+        except ValueError as e:
+            raise SystemExit("Einstellungs-Speicher: audit_rotation_bytes ungültig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["audit_rotation_bytes"], e))
+        if not 65536 <= v <= 64 * 1024 * 1024:
+            raise SystemExit("Einstellungs-Speicher: audit_rotation_bytes ausserhalb 64k..64m: %r" % (d["audit_rotation_bytes"],))
+        config.set_override("audit_rotation_bytes", v)
+    if "long_poll_s" in d:
+        try:
+            n = int(d["long_poll_s"])
+        except (TypeError, ValueError):
+            raise SystemExit("Einstellungs-Speicher: long_poll_s keine Zahl: %r" % (d["long_poll_s"],))
+        if not 0 <= n <= 3600:
+            raise SystemExit("Einstellungs-Speicher: long_poll_s ausserhalb 0..3600: %r" % (d["long_poll_s"],))
+        config.set_override("long_poll_s", n)
 
 
 def load_state():
@@ -158,7 +208,7 @@ def init():
             "alpine chown -R 65534:65534 /data; danach Container neu starten." % (d, e))
     load_settings()
     load_state()
-    audit("boot", budget=config.budget(), outmax=config.OUTMAX, filemax=config.FILEMAX,
+    audit("boot", budget=config.budget(), outmax=config.result_output_bytes(), filemax=config.FILEMAX,
           workers=len(workers), submitters=len(submitters))
 
 

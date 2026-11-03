@@ -7,8 +7,8 @@ User=vibe
 ExecStart=/usr/local/bin/vmadmin
 Restart=always
 RestartSec=5
-# Port 80 ohne root: AmbientCapabilities überträgt CAP_NET_BIND_SERVICE an den
-# Prozess, CapabilityBoundingSet schneidet alles andere ab (minimal exposure).
+# port 80 without root: AmbientCapabilities passes CAP_NET_BIND_SERVICE to the
+# process, CapabilityBoundingSet cuts everything else off (minimal exposure).
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 

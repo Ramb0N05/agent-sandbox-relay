@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# Transportoption E: Pull-Agent gegen die Job-Queue (Docker-Service agent-sandbox-relay) auf dem Hetzner-Server (Abschnitt 10.5)
-# Elfte Runde: persistente HTTP-Verbindung (kein curl-Prozess je Aufruf), kein Leerlauf-Sleep
-# (der Long-Poll von /jobs/next blockiert serverseitig; sleep nur im Fehlerfall).
-# Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
-# (provisioniert normalerweise per cloud-init, siehe cloud-init/vibe-sandbox-user-data.yaml)
+# transport option E: pull agent against the job queue (docker service agent-sandbox-relay) on the Hetzner server (section 10.5)
+# 11th round: persistent HTTP connection (no curl process per call), no idle sleep
+# (the /jobs/next long poll blocks server-side; sleep only on errors).
+# install target in the VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
+# (normally provisioned via cloud-init, see cloud-init/vibe-sandbox-user-data.yaml)
 import http.client
 import json
 import os
@@ -13,8 +13,8 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-# Worker-Token: Datei vor Konstante (vmadmin schreibt /home/vibe/.config/agent-sandbox/worker-token,
-# danach systemctl restart agent-sandbox-agent - das Token wird nur beim Start gelesen).
+# worker token: file before constant (vmadmin writes /home/vibe/.config/agent-sandbox/worker-token,
+# then systemctl restart agent-sandbox-agent - the token is only read at startup).
 TOKEN_FILE = os.environ.get(
     "AGENT_SANDBOX_TOKEN_FILE",
     "/home/vibe/.config/agent-sandbox/worker-token",
@@ -34,14 +34,14 @@ def _load_token():
 
 TOKEN = _load_token()
 ENDPOINT = "https://<agent-sandbox-relay-domain>"
-POLL_TIMEOUT = 310  # Client-Deckel knapp über dem serverseitigen Long-Poll (300 s)
-CMAX = 900  # Ausführungs-Deckel je Job (Sekunden)
-OUTMAX = 8 * 1024 * 1024  # Output-Deckel 8 MiB (Abschnitt 10.7)
-FILEMAX = 8 * 1024 * 1024  # Roh-Größe pro Datei im Datei-Store (Abschnitt 10.8)
+POLL_TIMEOUT = 310  # client cap just above the server-side long poll (300 s)
+CMAX = 900  # execution cap per job (seconds)
+OUTMAX = 8 * 1024 * 1024  # output cap 8 MiB (section 10.7)
+FILEMAX = 8 * 1024 * 1024  # raw size per file in the file store (section 10.8)
 
 
 class Relay:
-    # persistente Verbindung: http.client übernimmt Keep-Alive, Reconnect mit einem Retry
+    # persistent connection: http.client handles keep-alive, reconnect with one retry
     def __init__(self, endpoint, token, timeout=POLL_TIMEOUT):
         u = urlsplit(endpoint)
         self.host = u.hostname
@@ -60,7 +60,7 @@ class Relay:
             self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
 
     def _request(self, method, path, body=None, headers=None, retry=True):
-        # ein Versuch über die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
+        # one attempt over the existing connection; reconnect once on a connection error
         if self.conn is None:
             self._connect()
         h = {"Authorization": "Bearer " + self.token, "User-Agent": "agent-sandbox-agent"}
@@ -82,7 +82,7 @@ class Relay:
             raise
 
     def next_job(self):
-        # {"id": ..., "cmd": ...} oder None bei 204 (Long-Poll blockiert serverseitig)
+        # {"id": ..., "cmd": ...} or None on 204 (long poll blocks server-side)
         status, data = self._request("GET", "/jobs/next")
         if status == 204:
             return None
@@ -101,7 +101,7 @@ class Relay:
             raise RuntimeError("result: HTTP %d" % status)
 
     def fetch_file(self, fid, target):
-        # Datei aus dem Relay-Datei-Store in die VM; rc = HTTP-Status (200 -> 0)
+        # file from the relay file store into the VM; rc = HTTP status (200 -> 0)
         status, data = self._request("GET", "/files/%s" % fid)
         if status != 200:
             return status
@@ -110,7 +110,7 @@ class Relay:
         return 0
 
     def send_file(self, path):
-        # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn über FILEMAX
+        # file from the VM into the relay file store; rc 1 without upload if above FILEMAX
         try:
             with open(path, "rb") as f:
                 data = f.read(FILEMAX + 1)
@@ -126,7 +126,7 @@ class Relay:
 
 
 def run_cmd(cmd):
-    # Ausführung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
+    # execution like the bash agent: timeout 900, bash -lc, stdout+stderr combined
     try:
         p = subprocess.run(["timeout", str(CMAX), "bash", "-lc", cmd],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -140,7 +140,7 @@ def run_cmd(cmd):
 
 
 def execute(cmd, relay):
-    # Präfixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
+    # prefixes VIBE_FETCH (file into the VM) and VIBE_SEND (file out of the VM), else shell job
     if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
         _, fid, target = cmd.split(" ", 2)
         rc = relay.fetch_file(fid, target)
@@ -155,7 +155,7 @@ def execute(cmd, relay):
 
 
 def poll_once(relay):
-    # ein Zyklus: Long-Poll, Ausführung, Result; None bei Leerlauf (kein Sleep nötig)
+    # one cycle: long poll, execution, result; None when idle (no sleep needed)
     j = relay.next_job()
     if j is None:
         return None
@@ -171,7 +171,7 @@ def main():
             poll_once(relay)
         except Exception as e:
             print("agent-fehler:", e, file=sys.stderr)
-            time.sleep(1)  # nur im Fehlerfall; im Leerlauf blockiert der Long-Poll
+            time.sleep(1)  # only on errors; when idle the long poll blocks
 
 
 if __name__ == "__main__":

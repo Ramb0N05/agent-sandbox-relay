@@ -63,6 +63,17 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   (q35, SeaBIOS-Import, Device-Minimierung, Serial-Only).
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit vibe-sandbox).
+- vm/vm-install.sh: Installations- und Update-Skript für den Host
+  (neunzehnte Runde). Install: holt den aktuellen worker-Zweig per
+  raw.githubusercontent, ersetzt die drei user-data-Platzhalter, generiert
+  fehlende Passwörter aus /dev/urandom (24 alphanumerische Zeichen,
+  random(4)), legt die VM per virt-install an (identisch zu
+  vm/virt-install.sh, zusätzlich --noautoconsole, damit das Skript
+  zurückkehrt) und wartet auf die DHCP-Lease (virsh net-dhcp-leases mit
+  der MAC aus domiflist). Update: VM-Daten bleiben unberührt, Dateien
+  wandern über die Job-Queue (fünfzehnte Runde) in die VM; ohne
+  erreichbaren Agent druckt das Skript die manuelle serielle Prozedur.
+  Details und Parameter: Abschnitt "VM anlegen oder aktualisieren" unten.
 
 ## Platzhalter vor dem ersten Boot ersetzen
 
@@ -100,3 +111,49 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - Fallback ohne Datei-Endpunkte: Job cmd "base64 -w0 <datei>" (oder
   "gzip -c <datei> | base64 -w0"), Output im Result ist der Base64-Text
   (Deckel 8 MiB).
+
+## VM anlegen oder aktualisieren (vm/vm-install.sh)
+
+Alle Pfade sind Parameter mit dokumentierten Defaults:
+--vm-name (vibe-sandbox), --connect (qemu:///system), --disk
+(/mnt/GamesSSD0/libvirt/images/vibe-sandbox.qcow2), --backing
+(/mnt/GamesHDD/libvirt/images/Arch-Linux-x86_64-cloudimg.qcow2), --disk-gb
+(64), --memory (8192), --vcpus (4), --user-data
+(/root/vibe-sandbox-user-data.yaml), --raw-base (raw.githubusercontent.com,
+Branch worker). Weitere Optionen: --domain (Relay-Endpoint), --worker-token,
+--ttyd-password, --admin-password, --relay, --submitter-token, --recreate,
+--yes, --dry-run.
+
+Installation (VM existiert nicht): fetch der user-data, des Agenten, von
+vmadmin und der Units vom aktuellen worker-Zweig; Ersetzen von
+<agent-sandbox-relay-domain>, <ttyd-passwort> und <vm-admin-passwort>
+(ohne Angabe generiert, 24 alphanumerische Zeichen aus /dev/urandom);
+die user-data wird mit 0600 geschrieben, eine bestehende Datei vorher als
+.bak-Zeitstempel gesichert. Danach virt-install (plus --noautoconsole,
+virt-install(1)), Warteschleife bis 120 s auf die DHCP-Lease und Ausgabe
+der Initialwerte in der Shell (IP, Passwörter, Konsole-Hinweis). Ohne
+--worker-token läuft der Agent mit dem Konstanten-Fallback (401 auf
+der Queue); das Token wird nach dem Boot über die vmadmin-UI gesetzt
+(Datei geht der Konstante vor).
+
+Update (VM existiert, ohne --recreate): keine VM-Daten werden verändert.
+Voraussetzungen: --domain, falls der Agent noch den Platzhalter enthält
+(Fehler der fünfzehnten Runde, wird dabei behoben), außerdem --relay und
+--submitter-token für den Queue-Weg. Ablauf: Lebensprobe (echo
+vm-install-probe), dann je Datei POST /files -> Job VIBE_FETCH nach
+/home/vibe/.vm-update/ -> sudo install (vmadmin und Agent als vibe:vibe
+0700, Units als root:root 0644, den Defaults von cloud-init write_files
+entsprechend), daemon-reload, vmadmin-Neustart; die ttyd-Unit wird nur
+mit --ttyd-password angetastet (das Passwort steckt in ExecStart), der
+Agent-Restart läuft als letzter Job (nohup mit sleep 3, damit das Result
+noch gepostet wird). Worker-Token-Datei, Admin-Hash und ttyd-Passwort
+bleiben unberührt. Beantwortet der Agent keine Jobs, druckt das Skript
+die manuelle Prozedur für die serielle Konsole (virsh console, Autologin
+vibe, Fetch direkt vom öffentlichen Repo) und endet mit Exit-Code 3;
+ohne --relay/--submitter-token endet es mit Exit-Code 2.
+
+--recreate: verwirft die Domain (virsh undefine) und löscht das Overlay.
+DAS LÖSCHT ALLE DATEN DER VM (cloud-init läuft pro Overlay nur einmal,
+per-instance); Bestätigung mit dem Wort "ja" (oder --yes), danach wie
+Installation. --dry-run testet fetch und Ersetzung ohne libvirt (auch
+ohne virsh/virt-install lauffähig) und legt nichts an.

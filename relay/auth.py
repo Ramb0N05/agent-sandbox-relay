@@ -1,4 +1,4 @@
-# relay/auth.py - Bearer-Tokens nach Rolle, Admin-Login mit Lockout (elfte Runde)
+# relay/auth.py - Bearer-Tokens nach Rolle, Admin-Login mit Lockout (elfte Runde; vierzehnte: 401 ohne Basic-Challenge)
 import asyncio
 import hashlib
 import secrets
@@ -111,6 +111,11 @@ async def require_admin(request, credentials):
         _register_fail(peer)
         await admin_fail_delay()
         store.audit("admin_auth_fail", peer=peer, xff=xff, modus=mode)
-        raise HTTPException(status_code=401, headers={"WWW-Authenticate": 'Basic realm="agent-sandbox-relay"'})
+        # 401 bewusst ohne WWW-Authenticate-Challenge: Der legitime Client (Admin-UI)
+        # meldet sich proaktiv per Authorization-Header an; eine Basic-Challenge loest
+        # in Browsern den nativen Login-Dialog aus, auch bei fetch, bevor das
+        # JavaScript der UI die 401 sieht (Airbyte Issue 78177; SO 86105/9859627;
+        # RFC 7235 formuliert die Challenge nur als SHOULD).
+        raise HTTPException(status_code=401)
     _locks.pop(peer, None)  # erfolgreicher Login setzt Zaehler und Sperre zurueck
     return mode

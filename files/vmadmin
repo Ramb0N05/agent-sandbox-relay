@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# vmadmin - Verwaltung der vibe-sandbox-VM auf Port 80 (nur Host-Zugriff; NAT ohne DNAT)
-# Stil wie die Relay-Verwaltung (relay/templates/admin.html): Dark-Theme, Login-Card mit
-# sessionStorage, Hash-Navigation, native <dialog>-Modals, CSP-Nonce, 401 ohne Challenge
-# (Runde 14: Basic-Challenges lösen native Browser-Login-Dialoge aus).
-# Nur Python-stdlib (http.server), keine Pakete - Provisionierung per cloud-init.
-# Quellen: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, Port < 1024 ohne root),
-# ttyd -c user:password (kein Credential-File, deshalb Doppelpunkt-Verbot),
+# vmadmin - admin UI of the vibe-sandbox VM on port 80 (host access only; NAT without DNAT)
+# style like the relay admin UI (relay/templates/admin.html): dark theme, login card with
+# sessionStorage, hash navigation, native <dialog> modals, CSP nonce, 401 without challenge
+# (round 14: basic challenges trigger native browser login dialogs).
+# Python stdlib only (http.server), no packages - provisioned via cloud-init.
+# sources: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, port < 1024 without root),
+# ttyd -c user:password (no credential file, hence the colon ban),
 # Python http.server (BaseHTTPRequestHandler/ThreadingHTTPServer).
 import base64
 import hashlib
@@ -29,7 +29,7 @@ TTYD_UNIT_PATH = "/etc/systemd/system/ttyd-vibe.service"
 AGENT_SERVICE = "agent-sandbox-agent"
 TTYD_SERVICE = "ttyd-vibe"
 
-# Lockout je Client-IP wie im Relay: 5 Fehlversuche -> 300 s, Verdopplung bis 3600 s
+# lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
 LOCK_BASE = 300
 LOCK_MAX = 3600
@@ -51,27 +51,27 @@ def stored_admin_hash():
 
 
 def validate_token(tok):
-    # Worker-Token: ASCII, ohne Whitespace, 8-128 Zeichen (Relay vergibt 32-Byte-urlsafe)
+    # worker token: ASCII, no whitespace, 8-128 chars (the relay issues 32-byte urlsafe)
     return isinstance(tok, str) and tok.isascii() and 8 <= len(tok) <= 128 \
         and tok == tok.strip() and not any(c.isspace() for c in tok)
 
 
 def validate_ttyd_pw(pw):
-    # ttyd kennt nur -c user:password (kein Credential-File): kein ':' erlaubt;
-    # druckbare ASCII-Zeichen ohne Whitespace, sonst bricht die ExecStart-Zeile
+    # ttyd only supports -c user:password (no credential file): ':' not allowed;
+    # printable ASCII without whitespace, otherwise the ExecStart line breaks
     return isinstance(pw, str) and pw.isascii() and 1 <= len(pw) <= 64 \
         and ":" not in pw and not any(c.isspace() for c in pw) \
         and all(0x21 <= ord(c) <= 0x7E for c in pw)
 
 
 def validate_admin_pw(pw):
-    # eigenes Login-Passwort: 8-128 Zeichen, druckbar (Leerzeichen erlaubt)
+    # own login password: 8-128 chars, printable (spaces allowed)
     return isinstance(pw, str) and 8 <= len(pw) <= 128 \
         and all(0x20 <= ord(c) <= 0x7E for c in pw) and pw == pw.strip()
 
 
 def write_atomic(path, content, mode=0o600):
-    # atomar: tmp im selben Verzeichnis, dann rename (kein halb geschriebener Zustand)
+    # atomic: tmp in the same directory, then rename (no half-written state)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
     try:
@@ -88,8 +88,8 @@ def write_atomic(path, content, mode=0o600):
 
 
 def ttyd_unit_content(pw):
-    # Passwort bleibt im ExecStart-Klartext (ttyd hat kein Credential-File; ps-lesbar -
-    # dokumentierte Schwäche wie im Bestandsaufbau; die VM hat nur den User vibe)
+    # password stays in ExecStart plaintext (ttyd has no credential file; ps-readable -
+    # documented weakness as in the assessment; the VM has only the user vibe)
     return (
         "[Unit]\n"
         "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
@@ -183,7 +183,7 @@ def clear_fails(peer):
 
 
 def check_admin(auth_header, peer):
-    # Rückgabe: None bei Erfolg, sonst (status_code, headers)
+    # returns None on success, else (status_code, headers)
     rem = lockout_remaining(peer)
     if rem > 0:
         return 429, {"Retry-After": str(int(rem) + 1)}
@@ -203,7 +203,7 @@ def check_admin(auth_header, peer):
     if not ok:
         register_fail(peer)
         time.sleep(0.5)
-        # 401 ohne WWW-Authenticate: siehe Runde 14 (native Browser-Login-Dialoge)
+        # 401 without WWW-Authenticate: see round 14 (native browser login dialogs)
         return 401, {}
     clear_fails(peer)
     return None, {}
@@ -455,7 +455,7 @@ function showLogin(msg){
   PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
   if (msg){ document.getElementById("loginmsg").textContent = msg; }
 }
-async function tryLogin(pw, ausSession){
+async function tryLogin(pw, fromSession){
   PW = pw;
   try {
     await api("/admin/api/state");
@@ -464,7 +464,7 @@ async function tryLogin(pw, ausSession){
     showPage(pageFromHash());
     return true;
   } catch (e){
-    if (ausSession){
+    if (fromSession){
       PW = "";
       sessionStorage.removeItem("vmadminpw");
     }
@@ -564,7 +564,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "vmadmin"
 
     def log_message(self, fmt, *args):
-        pass  # kein access-log in journal
+        pass  # no access log in journal
 
     def _peer(self):
         return self.client_address[0] if self.client_address else "?"

@@ -3,7 +3,7 @@ users:
   - name: vibe
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     shell: /bin/bash
-ssh_genkeytypes: []  # keine SSH-Host-Keys generieren (openssh wird deinstalliert)
+ssh_genkeytypes: []  # do not generate SSH host keys (openssh gets uninstalled)
 packages:
   - git
   - curl
@@ -23,11 +23,11 @@ write_files:
     defer: true
     content: |
       #!/usr/bin/env python3
-      # Transportoption E: Pull-Agent gegen die Job-Queue (Docker-Service agent-sandbox-relay) auf dem Hetzner-Server (Abschnitt 10.5)
-      # Elfte Runde: persistente HTTP-Verbindung (kein curl-Prozess je Aufruf), kein Leerlauf-Sleep
-      # (der Long-Poll von /jobs/next blockiert serverseitig; sleep nur im Fehlerfall).
-      # Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
-      # (provisioniert normalerweise per cloud-init, siehe cloud-init/vibe-sandbox-user-data.yaml)
+      # transport option E: pull agent against the job queue (docker service agent-sandbox-relay) on the Hetzner server (section 10.5)
+      # 11th round: persistent HTTP connection (no curl process per call), no idle sleep
+      # (the /jobs/next long poll blocks server-side; sleep only on errors).
+      # install target in the VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
+      # (normally provisioned via cloud-init, see cloud-init/vibe-sandbox-user-data.yaml)
       import http.client
       import json
       import os
@@ -37,8 +37,8 @@ write_files:
       import time
       from urllib.parse import urlsplit
 
-      # Worker-Token: Datei vor Konstante (vmadmin schreibt /home/vibe/.config/agent-sandbox/worker-token,
-      # danach systemctl restart agent-sandbox-agent - das Token wird nur beim Start gelesen).
+      # worker token: file before constant (vmadmin writes /home/vibe/.config/agent-sandbox/worker-token,
+      # then systemctl restart agent-sandbox-agent - the token is only read at startup).
       TOKEN_FILE = os.environ.get(
           "AGENT_SANDBOX_TOKEN_FILE",
           "/home/vibe/.config/agent-sandbox/worker-token",
@@ -58,14 +58,14 @@ write_files:
 
       TOKEN = _load_token()
       ENDPOINT = "https://<agent-sandbox-relay-domain>"
-      POLL_TIMEOUT = 310  # Client-Deckel knapp über dem serverseitigen Long-Poll (300 s)
-      CMAX = 900  # Ausführungs-Deckel je Job (Sekunden)
-      OUTMAX = 8 * 1024 * 1024  # Output-Deckel 8 MiB (Abschnitt 10.7)
-      FILEMAX = 8 * 1024 * 1024  # Roh-Größe pro Datei im Datei-Store (Abschnitt 10.8)
+      POLL_TIMEOUT = 310  # client cap just above the server-side long poll (300 s)
+      CMAX = 900  # execution cap per job (seconds)
+      OUTMAX = 8 * 1024 * 1024  # output cap 8 MiB (section 10.7)
+      FILEMAX = 8 * 1024 * 1024  # raw size per file in the file store (section 10.8)
 
 
       class Relay:
-          # persistente Verbindung: http.client übernimmt Keep-Alive, Reconnect mit einem Retry
+          # persistent connection: http.client handles keep-alive, reconnect with one retry
           def __init__(self, endpoint, token, timeout=POLL_TIMEOUT):
               u = urlsplit(endpoint)
               self.host = u.hostname
@@ -84,7 +84,7 @@ write_files:
                   self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
 
           def _request(self, method, path, body=None, headers=None, retry=True):
-              # ein Versuch über die bestehende Verbindung; bei Verbindungsfehler einmal neu verbinden
+              # one attempt over the existing connection; reconnect once on a connection error
               if self.conn is None:
                   self._connect()
               h = {"Authorization": "Bearer " + self.token, "User-Agent": "agent-sandbox-agent"}
@@ -106,7 +106,7 @@ write_files:
                   raise
 
           def next_job(self):
-              # {"id": ..., "cmd": ...} oder None bei 204 (Long-Poll blockiert serverseitig)
+              # {"id": ..., "cmd": ...} or None on 204 (long poll blocks server-side)
               status, data = self._request("GET", "/jobs/next")
               if status == 204:
                   return None
@@ -125,7 +125,7 @@ write_files:
                   raise RuntimeError("result: HTTP %d" % status)
 
           def fetch_file(self, fid, target):
-              # Datei aus dem Relay-Datei-Store in die VM; rc = HTTP-Status (200 -> 0)
+              # file from the relay file store into the VM; rc = HTTP status (200 -> 0)
               status, data = self._request("GET", "/files/%s" % fid)
               if status != 200:
                   return status
@@ -134,7 +134,7 @@ write_files:
               return 0
 
           def send_file(self, path):
-              # Datei aus der VM in den Relay-Datei-Store; rc 1 ohne Upload, wenn über FILEMAX
+              # file from the VM into the relay file store; rc 1 without upload if above FILEMAX
               try:
                   with open(path, "rb") as f:
                       data = f.read(FILEMAX + 1)
@@ -150,7 +150,7 @@ write_files:
 
 
       def run_cmd(cmd):
-          # Ausführung wie im bash-Agent: timeout 900, bash -lc, stdout+stderr gemeinsam
+          # execution like the bash agent: timeout 900, bash -lc, stdout+stderr combined
           try:
               p = subprocess.run(["timeout", str(CMAX), "bash", "-lc", cmd],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -164,7 +164,7 @@ write_files:
 
 
       def execute(cmd, relay):
-          # Präfixe VIBE_FETCH (Datei in die VM) und VIBE_SEND (Datei aus der VM), sonst Shell-Job
+          # prefixes VIBE_FETCH (file into the VM) and VIBE_SEND (file out of the VM), else shell job
           if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
               _, fid, target = cmd.split(" ", 2)
               rc = relay.fetch_file(fid, target)
@@ -179,7 +179,7 @@ write_files:
 
 
       def poll_once(relay):
-          # ein Zyklus: Long-Poll, Ausführung, Result; None bei Leerlauf (kein Sleep nötig)
+          # one cycle: long poll, execution, result; None when idle (no sleep needed)
           j = relay.next_job()
           if j is None:
               return None
@@ -195,7 +195,7 @@ write_files:
                   poll_once(relay)
               except Exception as e:
                   print("agent-fehler:", e, file=sys.stderr)
-                  time.sleep(1)  # nur im Fehlerfall; im Leerlauf blockiert der Long-Poll
+                  time.sleep(1)  # only on errors; when idle the long poll blocks
 
 
       if __name__ == "__main__":
@@ -232,13 +232,13 @@ write_files:
     defer: true
     content: |
       #!/usr/bin/env python3
-      # vmadmin - Verwaltung der vibe-sandbox-VM auf Port 80 (nur Host-Zugriff; NAT ohne DNAT)
-      # Stil wie die Relay-Verwaltung (relay/templates/admin.html): Dark-Theme, Login-Card mit
-      # sessionStorage, Hash-Navigation, native <dialog>-Modals, CSP-Nonce, 401 ohne Challenge
-      # (Runde 14: Basic-Challenges lösen native Browser-Login-Dialoge aus).
-      # Nur Python-stdlib (http.server), keine Pakete - Provisionierung per cloud-init.
-      # Quellen: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, Port < 1024 ohne root),
-      # ttyd -c user:password (kein Credential-File, deshalb Doppelpunkt-Verbot),
+      # vmadmin - admin UI of the vibe-sandbox VM on port 80 (host access only; NAT without DNAT)
+      # style like the relay admin UI (relay/templates/admin.html): dark theme, login card with
+      # sessionStorage, hash navigation, native <dialog> modals, CSP nonce, 401 without challenge
+      # (round 14: basic challenges trigger native browser login dialogs).
+      # Python stdlib only (http.server), no packages - provisioned via cloud-init.
+      # sources: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, port < 1024 without root),
+      # ttyd -c user:password (no credential file, hence the colon ban),
       # Python http.server (BaseHTTPRequestHandler/ThreadingHTTPServer).
       import base64
       import hashlib
@@ -262,7 +262,7 @@ write_files:
       AGENT_SERVICE = "agent-sandbox-agent"
       TTYD_SERVICE = "ttyd-vibe"
 
-      # Lockout je Client-IP wie im Relay: 5 Fehlversuche -> 300 s, Verdopplung bis 3600 s
+      # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
       LOCK_FAILS = 5
       LOCK_BASE = 300
       LOCK_MAX = 3600
@@ -284,27 +284,27 @@ write_files:
 
 
       def validate_token(tok):
-          # Worker-Token: ASCII, ohne Whitespace, 8-128 Zeichen (Relay vergibt 32-Byte-urlsafe)
+          # worker token: ASCII, no whitespace, 8-128 chars (the relay issues 32-byte urlsafe)
           return isinstance(tok, str) and tok.isascii() and 8 <= len(tok) <= 128 \
               and tok == tok.strip() and not any(c.isspace() for c in tok)
 
 
       def validate_ttyd_pw(pw):
-          # ttyd kennt nur -c user:password (kein Credential-File): kein ':' erlaubt;
-          # druckbare ASCII-Zeichen ohne Whitespace, sonst bricht die ExecStart-Zeile
+          # ttyd only supports -c user:password (no credential file): ':' not allowed;
+          # printable ASCII without whitespace, otherwise the ExecStart line breaks
           return isinstance(pw, str) and pw.isascii() and 1 <= len(pw) <= 64 \
               and ":" not in pw and not any(c.isspace() for c in pw) \
               and all(0x21 <= ord(c) <= 0x7E for c in pw)
 
 
       def validate_admin_pw(pw):
-          # eigenes Login-Passwort: 8-128 Zeichen, druckbar (Leerzeichen erlaubt)
+          # own login password: 8-128 chars, printable (spaces allowed)
           return isinstance(pw, str) and 8 <= len(pw) <= 128 \
               and all(0x20 <= ord(c) <= 0x7E for c in pw) and pw == pw.strip()
 
 
       def write_atomic(path, content, mode=0o600):
-          # atomar: tmp im selben Verzeichnis, dann rename (kein halb geschriebener Zustand)
+          # atomic: tmp in the same directory, then rename (no half-written state)
           os.makedirs(os.path.dirname(path), exist_ok=True)
           fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
           try:
@@ -321,8 +321,8 @@ write_files:
 
 
       def ttyd_unit_content(pw):
-          # Passwort bleibt im ExecStart-Klartext (ttyd hat kein Credential-File; ps-lesbar -
-          # dokumentierte Schwäche wie im Bestandsaufbau; die VM hat nur den User vibe)
+          # password stays in ExecStart plaintext (ttyd has no credential file; ps-readable -
+          # documented weakness as in the assessment; the VM has only the user vibe)
           return (
               "[Unit]\n"
               "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
@@ -416,7 +416,7 @@ write_files:
 
 
       def check_admin(auth_header, peer):
-          # Rückgabe: None bei Erfolg, sonst (status_code, headers)
+          # returns None on success, else (status_code, headers)
           rem = lockout_remaining(peer)
           if rem > 0:
               return 429, {"Retry-After": str(int(rem) + 1)}
@@ -436,7 +436,7 @@ write_files:
           if not ok:
               register_fail(peer)
               time.sleep(0.5)
-              # 401 ohne WWW-Authenticate: siehe Runde 14 (native Browser-Login-Dialoge)
+              # 401 without WWW-Authenticate: see round 14 (native browser login dialogs)
               return 401, {}
           clear_fails(peer)
           return None, {}
@@ -688,7 +688,7 @@ write_files:
         PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
         if (msg){ document.getElementById("loginmsg").textContent = msg; }
       }
-      async function tryLogin(pw, ausSession){
+      async function tryLogin(pw, fromSession){
         PW = pw;
         try {
           await api("/admin/api/state");
@@ -697,7 +697,7 @@ write_files:
           showPage(pageFromHash());
           return true;
         } catch (e){
-          if (ausSession){
+          if (fromSession){
             PW = "";
             sessionStorage.removeItem("vmadminpw");
           }
@@ -797,7 +797,7 @@ write_files:
           server_version = "vmadmin"
 
           def log_message(self, fmt, *args):
-              pass  # kein access-log in journal
+              pass  # no access log in journal
 
           def _peer(self):
               return self.client_address[0] if self.client_address else "?"
@@ -942,8 +942,8 @@ write_files:
       ExecStart=/usr/local/bin/vmadmin
       Restart=always
       RestartSec=5
-      # Port 80 ohne root: AmbientCapabilities überträgt CAP_NET_BIND_SERVICE an den
-      # Prozess, CapabilityBoundingSet schneidet alles andere ab (minimal exposure).
+      # port 80 without root: AmbientCapabilities passes CAP_NET_BIND_SERVICE to the
+      # process, CapabilityBoundingSet cuts everything else off (minimal exposure).
       AmbientCapabilities=CAP_NET_BIND_SERVICE
       CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
@@ -951,16 +951,16 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - systemctl disable --now sshd
-  - pacman -Rns --noconfirm openssh  # Paket inkl. Abhängigkeiten entfernen (packages-Modul installiert nur)
-  - rm -f /etc/ssh/ssh_host_*key*  # generierte Host-Keys sind von pacman nicht getrackt
+  - pacman -Rns --noconfirm openssh  # remove package incl. dependencies (the packages module only installs)
+  - rm -f /etc/ssh/ssh_host_*key*  # generated host keys are not tracked by pacman
   - growpart /dev/vda 3
   - btrfs filesystem resize max /
   - systemctl daemon-reload
   - systemctl enable --now agent-sandbox-agent.service
   - systemctl enable --now ttyd-vibe.service
-  - mkdir -p /home/vibe/.config/agent-sandbox  # vmadmin erwartet das Verzeichnis (worker-token, admin-hash)
+  - mkdir -p /home/vibe/.config/agent-sandbox  # vmadmin expects the directory (worker-token, admin-hash)
   - printf '%s' '<vm-admin-passwort>' | sha256sum | cut -d' ' -f1 > /home/vibe/.config/agent-sandbox/admin-hash
-  - chown vibe:vibe /home/vibe/.config/agent-sandbox/admin-hash  # nur Hash liegt in der Datei (sha256, kein Klartext)
+  - chown vibe:vibe /home/vibe/.config/agent-sandbox/admin-hash  # only the hash is in the file (sha256, no plaintext)
   - chmod 600 /home/vibe/.config/agent-sandbox/admin-hash
   - systemctl enable --now vm-admin.service
   - systemctl restart serial-getty@ttyS0.service

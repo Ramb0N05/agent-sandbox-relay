@@ -14,6 +14,19 @@ DEFAULT_BUDGET = "256m"
 _UNITS = {"b": 1, "k": 1024, "kb": 1024, "m": 1024 * 1024, "mb": 1024 * 1024,
           "g": 1024 * 1024 * 1024, "gb": 1024 * 1024 * 1024}
 
+# Laufzeit-Overrides aus DATA_DIR/settings.json (sechzehnte Runde): Werte, die die
+# Verwaltungsoberflaeche zur Laufzeit aendert. Env bleibt Fallback, settings.json gewinnt.
+# Betroffen: budget(), exec_jobs_shown() - alles andere bleibt Start-Umwelt.
+_overrides: dict = {}
+
+
+def set_override(key, value):
+    _overrides[key] = value
+
+
+def get_override(key):
+    return _overrides.get(key)
+
 
 def parse_size(raw):
     # Byte-Wert wie mem_limit im Compose-File: Einheiten b, k|kb, m|mb, g|gb (case-insensitiv),
@@ -46,6 +59,8 @@ def data_dir():
 
 def budget():
     # Speicherbudget fuer Output- plus Datei-Encoding-Bytes; ungueltige Angabe: Start-Abbruch
+    if "budget" in _overrides:  # Einstellungsseite: Override aus settings.json (bereits geparst)
+        return _overrides["budget"]
     raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", DEFAULT_BUDGET)
     try:
         return parse_size(raw)
@@ -63,6 +78,8 @@ def poll_seconds():
 
 def exec_jobs_shown():
     # je Submitter angezeigte erledigte Jobs in der Verwaltung
+    if "exec_jobs_shown" in _overrides:  # Einstellungsseite: Override aus settings.json
+        return _overrides["exec_jobs_shown"]
     try:
         return max(1, int(os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")))
     except ValueError:

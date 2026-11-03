@@ -59,6 +59,7 @@ button.danger:hover{border-color:var(--err);color:var(--err)}
 #login input{width:100%}
 dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:var(--radius);
   padding:1.2rem 1.4rem;max-width:520px;width:92vw}
+dialog pre{max-height:30vh;overflow:auto}
 dialog::backdrop{background:rgba(5,8,12,.7)}
 dialog h3{margin:0 0 .6rem;color:var(--acc2)}
 dialog p{margin:.2rem 0 .8rem}
@@ -73,7 +74,35 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
   overflow-x:auto;font-size:.82rem}
 .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
+label.field{display:block;margin:.4rem 0}
+label.field input{width:100%}
 kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:.05rem .4rem;font-size:.8em}
+/* ---------- Responsive (sechzehnte Runde): Tabellen werden auf schmalen Screens ----------
+   zum Karten-Layout: Zelle = Zeile mit Label aus data-label (CSS-Tricks "Responsive Data Table
+   Roundup": "make each cell its own line. Each of those lines is labeled with a pseudo element ...
+   does not require horizontal scrolling"; Labels via data-*-Attribut + attr()). */
+nav{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+nav button{white-space:nowrap}
+table.rwd{overflow-wrap:anywhere}
+table.rwd td.cmdcell{font-size:.8rem}
+@media (max-width:720px){
+  header{padding:.55rem .8rem;gap:.5rem}
+  header h1{font-size:1rem}
+  main{padding:0 .8rem;margin-top:.8rem}
+  .grid{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.5rem}
+  table.rwd,table.rwd tbody,table.rwd tr,table.rwd td,table.rwd th{display:block}
+  table.rwd thead{display:none}
+  table.rwd{border:1px solid var(--line);border-radius:var(--radius);padding:.3rem .5rem;background:var(--panel)}
+  table.rwd tr{border:1px solid var(--line);border-radius:8px;padding:.25rem .5rem;margin:.5rem 0}
+  table.rwd tr:last-child{margin-bottom:0}
+  table.rwd td{display:flex;justify-content:space-between;align-items:baseline;gap:.6rem;
+    border-bottom:1px dashed var(--line);padding:.3rem .1rem;text-align:right;overflow-wrap:anywhere}
+  table.rwd td:last-child{border-bottom:none}
+  table.rwd td::before{content:attr(data-label);color:var(--muted);text-align:left;font-weight:600;flex:1}
+  table.rwd td .btnrow{display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end}
+  dialog{width:94vw;max-width:94vw;max-height:88vh}
+  .dlgrow{flex-wrap:wrap}
+}
 </style>
 </head>
 <body>
@@ -87,6 +116,7 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padd
     <button data-page="jobs">Jobs</button>
     <button data-page="audit">Protokoll</button>
     <button data-page="api">API-Doku</button>
+    <button data-page="einstellungen">Einstellungen</button>
     <button data-page="logout">Logout</button>
   </nav>
 </header>
@@ -130,10 +160,10 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padd
 <section class="page" id="page-tokens">
   <h2>Workers <span class="muted">(VM-Agenten)</span></h2>
   <div class="row"><button class="primary" id="btn-addw">Worker anlegen</button></div>
-  <table id="wtab"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
+  <table id="wtab" class="rwd"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
   <h2>Submitters <span class="muted">(Absender, je einem Worker zugeordnet)</span></h2>
   <div class="row"><button class="primary" id="btn-adds">Submitter anlegen</button></div>
-  <table id="stab"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
+  <table id="stab" class="rwd"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
   <div id="tokbox" hidden></div>
 </section>
 
@@ -151,13 +181,35 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padd
     </label>
     <button id="btn-audit-refresh">Aktualisieren</button>
   </div>
-  <table id="atab"><thead><tr><th>Zeit (UTC)</th><th>Ereignis</th><th>Details</th></tr></thead><tbody></tbody></table>
+  <table id="atab" class="rwd"><thead><tr><th>Zeit (lokal)</th><th>Ereignis</th><th>Details</th></tr></thead><tbody></tbody></table>
 </section>
 
 <section class="page" id="page-api">
   <h2>API-Dokumentation</h2>
   <p class="muted">Inhalt aus <span class="mono">GET /admin/api/usage</span> - dieselbe Struktur wie <span class="mono">GET /usage</span> des Relays.</p>
   <div id="apidoc"><p class="muted">Lade ...</p></div>
+</section>
+
+<section class="page" id="page-einstellungen">
+  <h2>Einstellungen <span class="muted">(zentrale Relay-Konfiguration)</span></h2>
+  <div class="card">
+    <h3 style="margin-top:0">Speicherbudget (Output + Dateien)</h3>
+    <p class="muted" id="set-budget-hinweis">-</p>
+    <label class="field">Budget <input id="set-budget" placeholder="z.B. 384m" maxlength="16"></label>
+    <div class="row"><button class="primary" id="btn-set-budget">Budget speichern</button>
+      <span class="muted">Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes.</span></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Erledigte Jobs je Submitter in der Jobs-Ansicht</h3>
+    <p class="muted" id="set-exec-hinweis">-</p>
+    <label class="field">Anzahl (1-500) <input id="set-exec" type="number" min="1" max="500"></label>
+    <div class="row"><button class="primary" id="btn-set-exec">Anzahl speichern</button></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Nur per Stack-Umgebung aenderbar (Compose/Portainer, Neustart noetig)</h3>
+    <table id="fixtab" class="rwd"><tbody></tbody></table>
+  </div>
+  <p class="muted">Aenderungen hier gelten sofort und ueberleben Neustarts (settings.json im Daten-Verzeichnis). Die fixen Grenzen oben haengen an der Start-Umgebung des Containers.</p>
 </section>
 
 </main>
@@ -212,6 +264,18 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padd
   </div>
 </dialog>
 
+<dialog id="dlg-cmd">
+  <h3 id="dlg-cmd-title">Job</h3>
+  <p class="muted" id="dlg-cmd-meta"></p>
+  <h3 style="margin-top:.4rem">cmd (vollstaendig)</h3>
+  <pre id="dlg-cmd-cmd" class="mono"></pre>
+  <h3>Output</h3>
+  <pre id="dlg-cmd-out" class="mono"></pre>
+  <div class="dlgrow">
+    <button class="primary" id="dlg-cmd-close">Schliessen</button>
+  </div>
+</dialog>
+
 <div class="toast" id="toast"></div>
 
 <script nonce="__NONCE__">
@@ -246,7 +310,15 @@ function fmtBytes(n){
   return (i ? v.toFixed(1) : v) + " " + u[i];
 }
 function fmtTs(ts){
-  try { return new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19); } catch (e) { return String(ts); }
+  // Lokale Zeit des Browsers: toLocaleString liefert die "language-sensitive representation
+  // of this date in the local timezone" (MDN) - Format und Zeitzone kommen aus den
+  // Browsereinstellungen, ohne dass der Server eine Zeitzone kennt.
+  try { return new Date(ts * 1000).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "medium"}); } catch (e) { return String(ts); }
+}
+function fmtIso(s){
+  // ISO-Zeitstempel des Servers (mit Offset, z.B. 2026-11-03T06:39:35.123+00:00) in lokale Zeit;
+  // der Date-Konstruktor parst ISO mit Offset (MDN "Date time string format").
+  try { return new Date(s).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "medium"}); } catch (e) { return String(s); }
 }
 
 /* ---------- Dialoge (nativ <dialog>) ---------- */
@@ -255,6 +327,21 @@ var dlgRename = document.getElementById("dlg-rename");
 var dlgConfirm = document.getElementById("dlg-confirm");
 var dlgWorker = document.getElementById("dlg-worker");
 var dlgSubmitter = document.getElementById("dlg-submitter");
+var dlgCmd = document.getElementById("dlg-cmd");
+
+function showCmd(jid){
+  // vollstaendiger cmd aus GET /admin/api/jobs/<id> (das Listing kuerzt bei 80 Zeichen)
+  api("/admin/api/jobs/" + encodeURIComponent(jid)).then(function(d){
+    document.getElementById("dlg-cmd-title").textContent = "Job " + d.id;
+    document.getElementById("dlg-cmd-meta").textContent =
+      d.status + " | Worker: " + d.worker + " | Submitter: " + d.submitter +
+      " | rc: " + (d.rc === null ? "-" : d.rc) + " | Zeit: " + fmtTs(d.ts) +
+      " | Output: " + fmtBytes(d.out_bytes) + (d.output_gekuerzt ? " (im Dialog gekuerzt)" : "");
+    document.getElementById("dlg-cmd-cmd").textContent = d.cmd || "(leer)";
+    document.getElementById("dlg-cmd-out").textContent = d.output === null || d.output === undefined ? "(kein Output)" : d.output;
+    dlgCmd.showModal();
+  });
+}
 
 function showToken(tok, name){
   document.getElementById("dlg-token-text").textContent = "Token fuer '" + name + "':\n" + tok;
@@ -330,7 +417,7 @@ function dlgAddSubmitter(workers){
 }
 
 /* ---------- Seitennavigation ---------- */
-var PAGES = ["login", "status", "tokens", "jobs", "audit", "api"];
+var PAGES = ["login", "status", "tokens", "jobs", "audit", "api", "einstellungen"];
 function showPage(name){
   if (name === "logout"){ logout(); return; }
   PAGES.forEach(function(p){
@@ -347,6 +434,7 @@ function showPage(name){
   if (name === "jobs"){ refreshJobs(); }
   if (name === "audit"){ refreshAudit(); }
   if (name === "api" && !apiDocLoaded){ loadApiDoc(); }
+  if (name === "einstellungen"){ refreshSettings(); }
 }
 function pageFromHash(){
   var h = location.hash.replace("#", "");
@@ -386,7 +474,7 @@ async function refreshStatus(){
   document.getElementById("st-bar").style.width = pct + "%";
   document.getElementById("st-budget").textContent = fmtBytes(d.data_bytes) + " von " + fmtBytes(d.budget) + " belegt (" + pct + " %)";
   document.getElementById("st-exec").textContent = d.exec_jobs_je_submitter;
-  document.getElementById("status-ts").textContent = "Stand " + new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  document.getElementById("status-ts").textContent = "Stand " + new Date().toLocaleString(undefined, {dateStyle: "medium", timeStyle: "medium"}) + " (lokal)";
 }
 
 /* ---------- Tokensseite ---------- */
@@ -397,21 +485,21 @@ async function refreshTokens(){
   var wt = document.querySelector("#wtab tbody"); wt.innerHTML = "";
   d.workers.forEach(function(w){
     wt.insertAdjacentHTML("beforeend",
-      "<tr><td>" + esc(w.name) + (w.legacy ? " <span class='badge queued'>legacy</span>" : "") +
-      "</td><td class='mono'>" + esc(w.id) + "</td><td class='muted'>" + esc(w.created) + "</td>" +
-      "<td><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button> " +
-      "<button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='delw danger'>loeschen</button></td></tr>");
+      "<tr><td data-label='Name'>" + esc(w.name) + (w.legacy ? " <span class='badge queued'>legacy</span>" : "") +
+      "</td><td data-label='ID' class='mono'>" + esc(w.id) + "</td><td data-label='angelegt' class='muted'>" + esc(fmtIso(w.created)) + "</td>" +
+      "<td data-label='Aktionen'><span class='btnrow'><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button> " +
+      "<button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='delw danger'>loeschen</button></span></td></tr>");
   });
   var st = document.querySelector("#stab tbody"); st.innerHTML = "";
   d.submitters.forEach(function(s){
     var opts = d.workers.map(function(w){ return "<option value='" + esc(w.id) + "'" + (w.id === s.worker_id ? " selected" : "") + ">" + esc(w.name) + "</option>"; }).join("");
     st.insertAdjacentHTML("beforeend",
-      "<tr><td>" + esc(s.name) + (s.legacy ? " <span class='badge queued'>legacy</span>" : "") +
-      "</td><td class='mono'>" + esc(s.id) + "</td><td><select id='as-" + esc(s.id) + "'>" + opts + "</select></td>" +
-      "<td class='muted'>" + esc(s.created) + "</td>" +
-      "<td><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button> " +
+      "<tr><td data-label='Name'>" + esc(s.name) + (s.legacy ? " <span class='badge queued'>legacy</span>" : "") +
+      "</td><td data-label='ID' class='mono'>" + esc(s.id) + "</td><td data-label='Worker'><select id='as-" + esc(s.id) + "'>" + opts + "</select></td>" +
+      "<td data-label='angelegt' class='muted'>" + esc(fmtIso(s.created)) + "</td>" +
+      "<td data-label='Aktionen'><span class='btnrow'><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button> " +
       "<button data-id='" + esc(s.id) + "' class='ass'>speichern</button> " +
-      "<button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='dels danger'>loeschen</button></td></tr>");
+      "<button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='dels danger'>loeschen</button></span></td></tr>");
   });
   document.querySelectorAll(".delw").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "worker", b.dataset.name); }); });
   document.querySelectorAll(".dels").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "submitter", b.dataset.name); }); });
@@ -461,9 +549,9 @@ async function refreshJobs(){
   box.innerHTML = "";
   d.submitters.forEach(function(s){
     var html = "<div class='card'><h3 style='margin-top:0'>" + esc(s.name) + " <span class='muted'>(" + esc(s.id) + ", offen: " + s.offen.length + ", erledigt angezeigt: " + s.erledigt.length + ")</span></h3>";
-    html += "<table><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit (UTC)</th><th>cmd (gekuerzt)</th><th></th></tr></thead><tbody>";
+    html += "<table class='rwd'><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit (lokal)</th><th>cmd</th><th>Aktionen</th></tr></thead><tbody>";
     s.offen.concat(s.erledigt).forEach(function(j){
-      html += "<tr><td><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td class='mono'>" + esc(j.id) + "</td><td>" + esc(j.worker) + "</td><td>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td>" + fmtBytes(j.out_bytes) + "</td><td class='muted'>" + esc(fmtTs(j.ts)) + "</td><td class='mono'>" + esc(j.cmd) + "</td><td class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></td></tr>";
+      html += "<tr><td data-label='Status'><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td data-label='ID' class='mono'>" + esc(j.id) + "</td><td data-label='Worker'>" + esc(j.worker) + "</td><td data-label='rc'>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td data-label='out'>" + fmtBytes(j.out_bytes) + "</td><td data-label='Zeit' class='muted'>" + esc(fmtTs(j.ts)) + "</td><td data-label='cmd' class='mono cmdcell'><span class='cmdtext'>" + esc(j.cmd) + "</span></td><td data-label='Aktionen'><span class='btnrow'><button class='cmddet'>vollstaendig</button></span><span class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></span></td></tr>";
     });
     html += "</tbody></table></div>";
     box.insertAdjacentHTML("beforeend", html);
@@ -478,6 +566,13 @@ async function refreshJobs(){
     if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
     if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await showConfirm("Job loeschen", "Job " + jid + " loeschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
   });
+  document.querySelectorAll(".cmddet").forEach(function(b){
+    b.addEventListener("click", function(){
+      var row = b.closest("tr");
+      var jobbtns = row.querySelector(".jobbtns");
+      showCmd(jobbtns.dataset.id);
+    });
+  });
 }
 
 /* ---------- Protokollseite ---------- */
@@ -488,8 +583,41 @@ async function refreshAudit(){
   var at = document.querySelector("#atab tbody"); at.innerHTML = "";
   d.events.forEach(function(e){
     var rest = JSON.parse(JSON.stringify(e)); delete rest.ts; delete rest.event;
-    at.insertAdjacentHTML("beforeend", "<tr><td class='muted'>" + esc(fmtTs(e.ts)) + "</td><td><span class='badge queued'>" + esc(e.event) + "</span></td><td class='mono'>" + esc(JSON.stringify(rest)) + "</td></tr>");
+    at.insertAdjacentHTML("beforeend", "<tr><td data-label='Zeit' class='muted'>" + esc(fmtIso(e.ts)) + "</td><td data-label='Ereignis'><span class='badge queued'>" + esc(e.event) + "</span></td><td data-label='Details' class='mono'>" + esc(JSON.stringify(rest)) + "</td></tr>");
   });
+}
+
+/* ---------- Einstellungsseite ---------- */
+async function refreshSettings(){
+  var d;
+  try { d = await api("/admin/api/settings"); } catch (e){ return; }
+  document.getElementById("set-budget").value = d.budget_roh;
+  document.getElementById("set-budget-hinweis").textContent =
+    "aktuell: " + fmtBytes(d.budget) + " belegt: " + fmtBytes(d.data_bytes) +
+    " - Quelle: " + d.budget_quelle + (d.budget_quelle === "env" ? " (AGENT_SANDBOX_RELAY_BUDGET im Stack)" : "");
+  document.getElementById("set-exec").value = d.exec_jobs_shown;
+  document.getElementById("set-exec-hinweis").textContent = "Quelle: " + d.exec_quelle;
+  var ft = document.querySelector("#fixtab tbody"); ft.innerHTML = "";
+  Object.entries(d.fixe).forEach(function(kv){
+    ft.insertAdjacentHTML("beforeend", "<tr><td data-label='" + esc(kv[0]) + "'>" + esc(kv[0]) + "</td><td data-label='Wert' class='mono'>" + esc(String(kv[1])) + "</td></tr>");
+  });
+}
+async function saveBudget(){
+  var raw = document.getElementById("set-budget").value.trim();
+  var ok = await showConfirm("Budget aendern", "Neues Speicherbudget '" + raw + "' setzen? Gilt sofort und ueberlebt Neustarts.");
+  if (!ok){ return; }
+  await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({budget: raw}) });
+  toast("Budget gesetzt");
+  refreshSettings();
+  refreshStatus();
+}
+async function saveExec(){
+  var n = parseInt(document.getElementById("set-exec").value, 10);
+  var ok = await showConfirm("Anzeige aendern", "Erledigte Jobs je Submitter auf " + n + " setzen?");
+  if (!ok){ return; }
+  await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({exec_jobs_shown: n}) });
+  toast("Anzeige-Limit gesetzt");
+  refreshSettings();
 }
 
 /* ---------- API-Doku-Seite ---------- */
@@ -534,6 +662,9 @@ document.getElementById("btn-adds").addEventListener("click", addSubmitter);
 document.getElementById("btn-jobs-refresh").addEventListener("click", refreshJobs);
 document.getElementById("btn-audit-refresh").addEventListener("click", refreshAudit);
 document.getElementById("audit-limit").addEventListener("change", refreshAudit);
+document.getElementById("btn-set-budget").addEventListener("click", saveBudget);
+document.getElementById("btn-set-exec").addEventListener("click", saveExec);
+document.getElementById("dlg-cmd-close").addEventListener("click", function(){ dlgCmd.close(); });
 document.getElementById("dlg-token-close").addEventListener("click", function(){ dlgToken.close(); });
 document.getElementById("dlg-token-copy").addEventListener("click", function(){
   var t = document.getElementById("dlg-token-text").textContent;

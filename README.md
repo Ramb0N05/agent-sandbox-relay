@@ -86,12 +86,22 @@ Pflicht bei submitter>"}, PATCH /admin/api/tokens/<id> {"name": "..."}
 (nur Submitter), DELETE /admin/api/tokens/<id>,
 GET /admin/api/jobs (Jobs je Submitter: offene queued/paused/running und
 die zuletzt erledigten, Default 64, je Job mit abarbeitendem Worker,
-cmd nur gekuerzt), POST /admin/api/jobs/<id>/pause (wartend -> angehalten;
+cmd nur gekuerzt), GET /admin/api/jobs/<id> (Job-Detail mit vollem cmd
+fuer den Dialog der Jobsseite; Output auf 16 KiB gekuerzt mit Kennung,
+das gespeicherte Result bleibt unangetastet bis 8 MiB),
+POST /admin/api/jobs/<id>/pause (wartend -> angehalten;
 angehaltene Jobs zieht der Worker nicht), POST /admin/api/jobs/<id>/resume
 (angehalten -> zurueck in die Queue, Worker wird geweckt),
 DELETE /admin/api/jobs/<id> (jeder Status; belegtes Budget wird bei
 erledigten Jobs zurueckgegeben), GET /admin/api/audit?limit=50,
 GET /admin/api/state (Budget/Jobs/Dateien/Zaehler),
+GET /admin/api/settings (zentrale Einstellungen: aenderbares Budget und
+Anzeige-Limit mit Quelle datei|env|default plus die nur per Stack-Umgebung
+fixen Grenzen), POST /admin/api/settings {"budget": "384m",
+"exec_jobs_shown": 64} (Validierung: Budget in Env-Syntax und nicht unter
+dem Output-Deckel (422), nicht unter dem belegten Speicher (409), Limit
+1-500 (422); wirksam sofort und dauerhaft in DATA_DIR/settings.json,
+beim Start fail-closed geladen wie tokens.json),
 GET /admin/api/usage (API-Doku fuer die Verwaltungsoberflaeche; dieselbe
 Struktur wie GET /usage, aber mit der Admin-Session statt Bearer-Token).
 
@@ -193,11 +203,20 @@ z. B. GET /healthz und /docs -> 404).
 - Admin-UI-Aufbau: Unterseiten Status (pollt /admin/api/state,
   Auto-Refresh 5 s, Budget-Balken), Tokens (anlegen per dialog, Token
   einmalige Anzeige mit Kopieren, umbenennen, Submitter umziehen,
-  loeschen mit Rueckfrage), Jobs (pause/resume/loeschen je Job),
-  Protokoll (Audit, Zeilenlimit einstellbar) und API-Doku (rendert
-  GET /admin/api/usage). Hash-Navigation (#status, #tokens, ...),
-  Eingabedialoge als native <dialog>-Elemente mit showModal()
-  (Baseline: seit Maerz 2022 in allen Browsern, MDN).
+  loeschen mit Rueckfrage), Jobs (pause/resume/loeschen je Job, cmd
+  vollstaendig per Dialog ueber GET /admin/api/jobs/<id>), Protokoll
+  (Audit, Zeilenlimit einstellbar), Einstellungen (Budget und
+  Anzeige-Limit zentral aenderbar via POST /admin/api/settings) und
+  API-Doku (rendert GET /admin/api/usage). Hash-Navigation (#status,
+  #tokens, ...), Eingabedialoge als native <dialog>-Elemente mit
+  showModal() (Baseline: seit Maerz 2022 in allen Browsern, MDN).
+- Admin-UI responsiv: Tabellen mit Klasse rwd klappen unter 720px auf
+  Karten um (thead versteckt, jede Zelle eine Zeile, Spaltenname per
+  td::before{content:attr(data-label)} aus dem Markup - Karten-Pattern
+  ohne horizontales Scrollen), Nav mit overflow-x, Dialoge width 94vw.
+  Zeitstempel rendert der Browser lokal (Date.prototype.toLocaleString
+  mit dateStyle/timeStyle, Sprache und Zeitzone aus den
+  Browsereinstellungen); der Server bleibt zeitzone-agnostisch.
 - Pydantic erzwingt cmd als String mit max_length=10000 (Verstoss -> 422)
   und die Token-Felder (Rolle nur worker|submitter, Name 1-64 Zeichen).
 - Verwaiste Long-Polls nehmen keine Jobs mehr an: GET /jobs/next prueft

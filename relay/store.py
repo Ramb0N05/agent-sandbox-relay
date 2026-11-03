@@ -58,6 +58,62 @@ def _reindex():
     submit_by_hash = {s["hash"]: s for s in submitters}
 
 
+def settings_all():
+    # aktuelle Roh-Werte aus settings.json (ohne Overrides-Logik, fuer Anzeige und Merge)
+    p = os.path.join(config.data_dir(), "settings.json")
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def settings_raw(key):
+    return settings_all().get(key)
+
+
+def save_settings(values):
+    # Einstellungsseite (sechzehnte Runde): Overrides dauerhaft in DATA_DIR/settings.json,
+    # Roh-Werte (Budget in Env-Syntax) fuer Nachvollziehbarkeit; atomar wie tokens.json
+    d = config.data_dir()
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, "settings.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(values, f, ensure_ascii=True)
+    os.replace(tmp, os.path.join(d, "settings.json"))
+
+
+def load_settings():
+    # beim Start: settings.json uebertraegt Werte in die config-Overrides (fail-closed wie tokens.json)
+    p = os.path.join(config.data_dir(), "settings.json")
+    if not os.path.exists(p):
+        return
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SystemExit("Einstellungs-Speicher unlesbar: %s (%s)" % (p, e))
+    if not isinstance(d, dict):
+        raise SystemExit("Einstellungs-Speicher unlesbar: %s (kein JSON-Objekt)" % p)
+    if "budget" in d:
+        try:
+            v = config.parse_size(d["budget"])
+        except ValueError as e:
+            raise SystemExit("Einstellungs-Speicher: budget ungueltig: %r (%s). Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes" % (d["budget"], e))
+        config.set_override("budget", v)
+    if "exec_jobs_shown" in d:
+        try:
+            n = int(d["exec_jobs_shown"])
+        except (TypeError, ValueError):
+            raise SystemExit("Einstellungs-Speicher: exec_jobs_shown keine Zahl: %r" % (d["exec_jobs_shown"],))
+        if not 1 <= n <= 500:
+            raise SystemExit("Einstellungs-Speicher: exec_jobs_shown ausserhalb 1..500: %r" % (d["exec_jobs_shown"],))
+        config.set_override("exec_jobs_shown", n)
+
+
 def load_state():
     global workers, submitters
     p = os.path.join(config.data_dir(), "tokens.json")
@@ -100,6 +156,7 @@ def init():
             "DATA_DIR nicht schreibbar: %s (%s). Fix: Volume in Portainer loeschen (Inhalt wird "
             "aus der Env neu migriert) oder einmalig chownen: docker run --rm -v <volume>:/data "
             "alpine chown -R 65534:65534 /data; danach Container neu starten." % (d, e))
+    load_settings()
     load_state()
     audit("boot", budget=config.budget(), outmax=config.OUTMAX, filemax=config.FILEMAX,
           workers=len(workers), submitters=len(submitters))

@@ -33,6 +33,12 @@ class TokenAssign(BaseModel):
     worker_id: str = Field(min_length=1)
 
 
+class SettingsUpdate(BaseModel):
+    # Einstellungsseite (sechzehnte Runde): Budget in Env-Syntax (b/kb/mb/gb), Anzeige-Limit 1..500
+    budget: str | None = Field(default=None, max_length=16)
+    exec_jobs_shown: int | None = None
+
+
 def _auto_name(prefix):
     return prefix + "-" + uuid.uuid4().hex[:6]
 
@@ -57,6 +63,67 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
     return {"budget": config.budget(), "data_bytes": store.data_bytes, "jobs": len(store.jobs),
             "files": len(store.files), "workers": len(store.workers), "submitters": len(store.submitters),
             "exec_jobs_je_submitter": config.exec_jobs_shown()}
+
+
+@router.get("/admin/api/settings")
+async def admin_settings(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # Einstellungsseite: aenderbare Werte (Budget, Anzeige-Limit) plus Start-umweltfixe Grenzen
+    await auth.require_admin(request, credentials)
+    budget_raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", config.DEFAULT_BUDGET)
+    exec_raw = os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")
+    return {
+        "budget": config.budget(),
+        "budget_roh": store.settings_raw("budget") if config.get_override("budget") is not None else budget_raw,
+        "budget_quelle": "datei" if config.get_override("budget") is not None else ("env" if "AGENT_SANDBOX_RELAY_BUDGET" in os.environ else "default"),
+        "data_bytes": store.data_bytes,
+        "exec_jobs_shown": config.exec_jobs_shown(),
+        "exec_quelle": "datei" if config.get_override("exec_jobs_shown") is not None else ("env" if "AGENT_SANDBOX_EXECJOBSSHOWN" in os.environ else "default"),
+        "fixe": {
+            "cmd_zeichen": 10000,
+            "result_output_bytes": config.OUTMAX,
+            "datei_bytes_roh": config.FILEMAX,
+            "datei_store_eintraege": config.FILESTOREMAX,
+            "job_store_eintraege": config.JOBSTOREMAX,
+            "audit_rotation_bytes": config.AUDITMAX,
+            "long_poll_s": 300,
+            "admin_nutzername": config.ADMIN_USERNAME,
+        },
+        "hinweis_env": "cmd_zeichen, Result-Output, Datei-Deckel, Store-Grenzen, Long-Poll und Nutzername stehen nur als Stack-Umgebung (Compose/Portainer) zur Verfuegung; Aenderungen brauchen einen Neustart des Services.",
+    }
+
+
+@router.post("/admin/api/settings")
+async def admin_settings_update(body: SettingsUpdate, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    await auth.require_admin(request, credentials)
+    changed = {}
+    if body.budget is not None:
+        raw = body.budget.strip()
+        try:
+            v = config.parse_size(raw)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Budget ungueltig. Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)")
+        if v < config.OUTMAX:
+            raise HTTPException(status_code=422, detail="Budget unter dem Output-Deckel (%d Bytes) macht die Queue unbrauchbar" % config.OUTMAX)
+        if v < store.data_bytes:
+            raise HTTPException(status_code=409, detail="Budget (%d Bytes) liegt unter dem aktuell belegten Speicher (%d Bytes) - erst Jobs oder Dateien loeschen" % (v, store.data_bytes))
+        changed["budget"] = raw
+    if body.exec_jobs_shown is not None:
+        n = int(body.exec_jobs_shown)
+        if not 1 <= n <= 500:
+            raise HTTPException(status_code=422, detail="erledigte Jobs je Submitter: 1 bis 500")
+        changed["exec_jobs_shown"] = n
+    if not changed:
+        raise HTTPException(status_code=422, detail="kein Feld gesetzt (budget, exec_jobs_shown)")
+    values = store.settings_all()
+    values.update(changed)
+    if "budget" in values:
+        config.set_override("budget", config.parse_size(values["budget"]))
+    if "exec_jobs_shown" in values:
+        config.set_override("exec_jobs_shown", int(values["exec_jobs_shown"]))
+    store.save_settings(values)
+    store.audit("settings_change", **changed)
+    return {"ok": True, "budget": config.budget(), "exec_jobs_shown": config.exec_jobs_shown(),
+            "budget_roh": values.get("budget")}
 
 
 @router.get("/admin/api/usage")
@@ -172,6 +239,25 @@ def _job_view(j):
     return {"id": j["id"], "status": j["status"], "worker": j.get("worker"), "submitter": j.get("submitter"),
             "rc": j.get("rc"), "out_bytes": len(j["output"]) if isinstance(j.get("output"), str) else 0,
             "ts": j["ts"], "cmd": cmd}
+
+
+DETAIL_OUTMAX = 16384  # Output im Job-Dialog gekuerzt (volles Result bliebe bis 8 MiB in der UI)
+
+
+@router.get("/admin/api/jobs/{jid}")
+async def admin_job_detail(jid: str, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # vollstaendiger cmd fuer den Dialog der Jobsseite (das Listing kuerzt bei 80 Zeichen)
+    await auth.require_admin(request, credentials)
+    j = store.jobs.get(jid)
+    if j is None:
+        raise HTTPException(status_code=404, detail="Job nicht gefunden")
+    out = j.get("output")
+    out_len = len(out) if isinstance(out, str) else 0
+    if isinstance(out, str) and out_len > DETAIL_OUTMAX:
+        out = out[:DETAIL_OUTMAX] + "\n[agent-sandbox-relay: Output gekuerzt, voll %d Bytes]" % out_len
+    return {"id": j["id"], "status": j["status"], "worker": j.get("worker"), "submitter": j.get("submitter"),
+            "rc": j.get("rc"), "out_bytes": out_len, "ts": j["ts"], "cmd": j.get("cmd") or "",
+            "output": out if isinstance(out, str) else None, "output_gekuerzt": out_len > DETAIL_OUTMAX}
 
 
 @router.get("/admin/api/jobs")

@@ -100,24 +100,27 @@ Anzeige-Limit mit Quelle datei|env|default, Container-Speichergrenze
 mem_limit, Budget-Maximum budget_max = mem_limit - 64 MiB Headroom,
 budget_headroom plus die änderbaren Grenzen cmd_zeichen (Standard 10000,
 absolute Hartkappe 100000 im Modell), result_output_bytes (Standard 8 MiB,
-64k bis Budget), job_store_eintraege (Standard 500, 1-5000),
+64k bis Budget), datei_bytes_roh (Standard 8 MiB, 64k bis Budget; der
+Datei-Deckel regelt den 413 Content Too Large der Uploads), job_store_eintraege (Standard 500, 1-5000),
 datei_store_eintraege (Standard 64, 1-5000), audit_rotation_bytes
 (Standard 2 MiB, 64k-64m) und long_poll_s (Standard 300, 0-3600) - alle
 mit Quelle), POST /admin/api/settings {"budget": "384m",
 "exec_jobs_shown": 64, "cmd_zeichen": 10000, "result_output_bytes": "8m",
 "job_store_eintraege": 500, "datei_store_eintraege": 64,
-"audit_rotation_bytes": "2m", "long_poll_s": 300} (Validierung: Budget
+"audit_rotation_bytes": "2m", "datei_bytes_roh": "8m", "long_poll_s": 300}
+(Validierung: Budget
 in Env-Syntax und nicht unter dem Output-Deckel (422), nicht über dem
 Container-Maximum mem_limit - 64 MiB (422), nicht unter dem belegten
 Speicher (409), Deckel 64k bis Budget (422, kreuzgeprüft),
-Zahlen-Limits in ihren Bereichen (422); wirksam sofort und dauerhaft in
+Zahlen-Limits in ihren Bereichen (422, auch result_output_bytes und
+datei_bytes_roh kreuzgeprüft gegen das Budget); wirksam sofort und dauerhaft in
 DATA_DIR/settings.json, beim Start fail-closed geladen wie tokens.json;
 das Maximum liest der
 Relay aus der eigenen cgroup: /sys/fs/cgroup/memory.max (v2) bzw.
 /sys/fs/cgroup/memory/memory.limit_in_bytes (v1) - der Container sieht
 dank cgroup-Namespace seine eigene Grenze, "max" oder der v1-Default
-9223372036854771712 bedeuten unbegrenzt, dann gilt kein Maximum; nur
-datei_bytes_roh und der Admin-Nutzername bleiben Stack-fest),
+9223372036854771712 bedeuten unbegrenzt, dann gilt kein Maximum; nur der
+Admin-Nutzername bleibt Stack-fest),
 GET /admin/api/usage (API-Doku für die Verwaltungsoberfläche; dieselbe
 Struktur wie GET /usage, aber mit der Admin-Session statt Bearer-Token).
 
@@ -250,7 +253,8 @@ z. B. GET /healthz und /docs -> 404).
   verschlafen. GET /jobs/<id>/wait nutzt dasselbe Muster.
 - Result-Output wird serverseitig auf 8 MiB gedeckelt, der Job-Store auf
   500 Einträge, der Datei-Store auf 64 Einträge (älteste zuerst raus);
-  Datei-Rohbytes sind auf 8 MiB begrenzt (413 Content Too Large).
+  Datei-Rohbytes sind auf 8 MiB begrenzt (413 Content Too Large; der
+  Deckel ist über datei_bytes_roh einstellbar, 64k bis Budget).
 - Speicherbudget (siehe Environment) schützt vor OOM-Kills des
   Containers (Docker exit 137): Daten werden geräumt oder gekürzt,
   bevor das Limit erreicht ist. Das Budget liegt per Validation maximal

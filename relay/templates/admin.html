@@ -210,6 +210,7 @@ table.rwd td.cmdcell{font-size:.8rem}
     <p class="muted" id="set-more-hinweis">-</p>
     <label class="field">cmd-Zeichenlimit (1-100000) <input id="set-cmd" type="number" min="1" max="100000"></label>
     <label class="field">Result-Output-Deckel (ab 64k, z.B. 8m) <input id="set-outmax" maxlength="16" placeholder="z.B. 8m"></label>
+    <label class="field">Datei-Deckel roh (ab 64k, z.B. 8m) <input id="set-filemax" maxlength="16" placeholder="z.B. 8m"></label>
     <label class="field">Job-Store-Einträge (1-5000) <input id="set-jobstore" type="number" min="1" max="5000"></label>
     <label class="field">Datei-Store-Einträge (1-5000) <input id="set-filestore" type="number" min="1" max="5000"></label>
     <label class="field">Audit-Rotation (64k bis 64m, z.B. 2m) <input id="set-audit" maxlength="16" placeholder="z.B. 2m"></label>
@@ -322,14 +323,14 @@ function fmtBytes(n){
   return (i ? v.toFixed(1) : v) + " " + u[i];
 }
 function fmtTs(ts){
-  // Lokale Zeit des Browsers: toLocaleString liefert die "language-sensitive representation
-  // of this date in the local timezone" (MDN) - Format und Zeitzone kommen aus den
-  // Browsereinstellungen, ohne dass der Server eine Zeitzone kennt.
+  // browser local time: toLocaleString returns the "language-sensitive representation
+  // of this date in the local timezone" (MDN) - format and timezone come from the
+  // browser settings, without the server knowing a timezone.
   try { return new Date(ts * 1000).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "medium"}); } catch (e) { return String(ts); }
 }
 function fmtIso(s){
-  // ISO-Zeitstempel des Servers (mit Offset, z.B. 2026-11-03T06:39:35.123+00:00) in lokale Zeit;
-  // der Date-Konstruktor parst ISO mit Offset (MDN "Date time string format").
+  // server ISO timestamp (with offset, e.g. 2026-11-03T06:39:35.123+00:00) to local time;
+  // the Date constructor parses ISO with offset (MDN "Date time string format").
   try { return new Date(s).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "medium"}); } catch (e) { return String(s); }
 }
 
@@ -342,7 +343,7 @@ var dlgSubmitter = document.getElementById("dlg-submitter");
 var dlgCmd = document.getElementById("dlg-cmd");
 
 function showCmd(jid){
-  // vollständiger cmd aus GET /admin/api/jobs/<id> (das Listing kürzt bei 80 Zeichen)
+  // full cmd from GET /admin/api/jobs/<id> (the listing truncates at 80 characters)
   api("/admin/api/jobs/" + encodeURIComponent(jid)).then(function(d){
     document.getElementById("dlg-cmd-title").textContent = "Job " + d.id;
     document.getElementById("dlg-cmd-meta").textContent =
@@ -456,7 +457,7 @@ function showLogin(msg){
   PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
   if (msg){ document.getElementById("loginmsg").textContent = msg; }
 }
-async function tryLogin(user, pw, ausSession){
+async function tryLogin(user, pw, fromSession){
   USER = user; PW = pw;
   try {
     await api("/admin/api/state");
@@ -466,7 +467,7 @@ async function tryLogin(user, pw, ausSession){
     showPage(pageFromHash());
     return true;
   } catch (e){
-    if (ausSession){
+    if (fromSession){
       PW = "";
       sessionStorage.removeItem("relayadminuser");
       sessionStorage.removeItem("relayadminpw");
@@ -620,12 +621,13 @@ async function refreshSettings(){
   document.getElementById("set-exec-hinweis").textContent = "Quelle: " + d.exec_quelle;
   document.getElementById("set-cmd").value = d.cmd_zeichen;
   document.getElementById("set-outmax").value = d.result_output_bytes_roh;
+  document.getElementById("set-filemax").value = d.datei_bytes_roh_roh;
   document.getElementById("set-jobstore").value = d.job_store_eintraege;
   document.getElementById("set-filestore").value = d.datei_store_eintraege;
   document.getElementById("set-audit").value = d.audit_rotation_bytes_roh;
   document.getElementById("set-poll").value = d.long_poll_s;
   document.getElementById("set-more-hinweis").textContent =
-    "Quellen - cmd: " + d.cmd_zeichen_quelle + ", Result: " + d.result_output_bytes_quelle +
+    "Quellen - cmd: " + d.cmd_zeichen_quelle + ", Result: " + d.result_output_bytes_quelle + ", Datei-Deckel: " + d.datei_bytes_roh_quelle +
     ", Job-Store: " + d.job_store_eintraege_quelle + ", Datei-Store: " + d.datei_store_eintraege_quelle +
     ", Audit: " + d.audit_rotation_bytes_quelle + ", Long-Poll: " + d.long_poll_quelle;
   var ft = document.querySelector("#fixtab tbody"); ft.innerHTML = "";
@@ -656,6 +658,7 @@ async function saveMore(){
   var num = function(id){ var v = parseInt(f(id), 10); return isNaN(v) ? null : v; };
   if (f("set-cmd") !== "" ){ var v = num("set-cmd"); if (v !== null){ b.cmd_zeichen = v; } }
   if (f("set-outmax") !== ""){ b.result_output_bytes = f("set-outmax"); }
+  if (f("set-filemax") !== ""){ b.datei_bytes_roh = f("set-filemax"); }
   if (f("set-jobstore") !== ""){ var v = num("set-jobstore"); if (v !== null){ b.job_store_eintraege = v; } }
   if (f("set-filestore") !== ""){ var v = num("set-filestore"); if (v !== null){ b.datei_store_eintraege = v; } }
   if (f("set-audit") !== ""){ b.audit_rotation_bytes = f("set-audit"); }

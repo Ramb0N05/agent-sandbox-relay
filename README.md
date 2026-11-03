@@ -91,7 +91,9 @@ angehaltene Jobs zieht der Worker nicht), POST /admin/api/jobs/<id>/resume
 (angehalten -> zurueck in die Queue, Worker wird geweckt),
 DELETE /admin/api/jobs/<id> (jeder Status; belegtes Budget wird bei
 erledigten Jobs zurueckgegeben), GET /admin/api/audit?limit=50,
-GET /admin/api/state (Budget/Jobs/Dateien/Zaehler).
+GET /admin/api/state (Budget/Jobs/Dateien/Zaehler),
+GET /admin/api/usage (API-Doku fuer die Verwaltungsoberflaeche; dieselbe
+Struktur wie GET /usage, aber mit der Admin-Session statt Bearer-Token).
 
 ## Environment
 
@@ -188,6 +190,14 @@ z. B. GET /healthz und /docs -> 404).
   script-Elemente, nicht on*-Attribute; statische und dynamische
   Buttons binden deshalb per addEventListener im nonce-gesicherten
   Script.
+- Admin-UI-Aufbau: Unterseiten Status (pollt /admin/api/state,
+  Auto-Refresh 5 s, Budget-Balken), Tokens (anlegen per dialog, Token
+  einmalige Anzeige mit Kopieren, umbenennen, Submitter umziehen,
+  loeschen mit Rueckfrage), Jobs (pause/resume/loeschen je Job),
+  Protokoll (Audit, Zeilenlimit einstellbar) und API-Doku (rendert
+  GET /admin/api/usage). Hash-Navigation (#status, #tokens, ...),
+  Eingabedialoge als native <dialog>-Elemente mit showModal()
+  (Baseline: seit Maerz 2022 in allen Browsern, MDN).
 - Pydantic erzwingt cmd als String mit max_length=10000 (Verstoss -> 422)
   und die Token-Felder (Rolle nur worker|submitter, Name 1-64 Zeichen).
 - Verwaiste Long-Polls nehmen keine Jobs mehr an: GET /jobs/next prueft

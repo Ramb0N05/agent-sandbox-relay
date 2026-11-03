@@ -135,9 +135,8 @@ async def wait_job(jid: str, request: Request, timeout: int = 25, authorization:
             return j
 
 
-@router.get("/usage")
-async def usage(request: Request, authorization: str | None = Header(None)):
-    auth.auth_any(request, authorization)
+def usage_data():
+    # Struktur fuer GET /usage und die API-Doku-Seite der Verwaltung (GET /admin/api/usage, HTTP-Basic-Session)
     return {
         "service": "agent-sandbox-relay",
         "auth": "Authorization: Bearer <token>; Rollen: Submitter (Jobs einspeisen/abfragen) und Worker (Jobs ziehen/Resultate liefern); alle Endpunkte ausser GET /healthz",
@@ -176,6 +175,7 @@ async def usage(request: Request, authorization: str | None = Header(None)):
             "DELETE /admin/api/jobs/<id>": "Job loeschen (jeder Status; Budget wird bei erledigten Jobs zurueckgegeben)",
             "GET /admin/api/audit": "Protokoll (neueste zuerst)",
             "GET /admin/api/state": "Budget/Jobs/Dateien/Zaehler",
+            "GET /admin/api/usage": "diese Dokumentation mit der Admin-Session (HTTP Basic) statt Bearer-Token",
         },
         "dateitransfer": {
             "datei_in_die_vm": "1) POST /files mit Rohbytes -> id; 2) Job cmd 'VIBE_FETCH <id> <zielpfad>'",
@@ -188,3 +188,9 @@ async def usage(request: Request, authorization: str | None = Header(None)):
             "curl -X POST https://<agent-sandbox-relay-domain>/files -H 'Authorization: Bearer <token>' --data-binary @datei.bin",
         ],
     }
+
+
+@router.get("/usage")
+async def usage(request: Request, authorization: str | None = Header(None)):
+    auth.auth_any(request, authorization)
+    return usage_data()

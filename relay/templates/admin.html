@@ -5,50 +5,222 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-sandbox-relay Verwaltung</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}
-table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem}
-th,td{border:1px solid #ccc;padding:.35rem .6rem;text-align:left;font-size:.9rem}
-th{background:#f3f3f3}
-#tokbox{background:#f7f7f7;border:1px solid #888;padding:.6rem;margin:.6rem 0;white-space:pre-wrap;word-break:break-all}
-.muted{color:#666;font-size:.85rem}
-input,select,button{padding:.25rem}
-.badge{display:inline-block;padding:0 .35rem;border-radius:4px;font-size:.8rem}
-.queued{background:#eee}.running{background:#ffd}.paused{background:#fda}.done{background:#dfd}
-.cmd{font-family:monospace;font-size:.8rem}
-h3{margin-bottom:.2rem}
+:root{
+  --bg:#0f1216;--panel:#171b21;--panel2:#1d222a;--line:#2a313b;--text:#e6e9ee;
+  --muted:#8b94a1;--acc:#4da3ff;--acc2:#7ee2b8;--warn:#ffb454;--err:#ff6b6b;
+  --queued:#3d4450;--running:#7a5d00;--paused:#7a3a1f;--done:#1e5c38;--radius:10px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,sans-serif}
+a{color:var(--acc)}
+code,.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em}
+header{display:flex;flex-wrap:wrap;gap:.8rem;align-items:center;padding:.7rem 1.2rem;
+  background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:.02em}
+header h1 span{color:var(--acc)}
+nav{display:flex;gap:.35rem;flex-wrap:wrap;margin-left:auto}
+nav button{border:1px solid transparent;background:none;color:var(--muted);padding:.4rem .8rem;
+  border-radius:8px;cursor:pointer;font-size:.9rem}
+nav button.active{color:var(--text);background:var(--panel2);border-color:var(--line)}
+nav button:hover{color:var(--text)}
+main{max-width:1080px;margin:1.2rem auto 4rem;padding:0 1.2rem}
+section.page{display:none}
+section.page.active{display:block}
+h2{font-size:1.15rem;margin:1.4rem 0 .5rem}
+h3{font-size:1rem;margin:1rem 0 .3rem;color:var(--acc2)}
+.muted{color:var(--muted);font-size:.85rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:1rem 1.2rem;margin:.5rem 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.6rem;margin:.6rem 0 1rem}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:.8rem 1rem}
+.stat b{display:block;font-size:1.4rem;font-weight:650}
+.stat small{color:var(--muted)}
+.bar{height:10px;background:var(--panel2);border-radius:6px;overflow:hidden;margin:.3rem 0 .2rem}
+.bar div{height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s}
+table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem;font-size:.88rem}
+th,td{border-bottom:1px solid var(--line);padding:.42rem .55rem;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;white-space:nowrap}
+tr:hover td{background:rgba(77,163,255,.05)}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);color:var(--text);
+  border-radius:8px;padding:.45rem .6rem;font-size:.9rem}
+input:focus,select:focus{outline:none;border-color:var(--acc)}
+button{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;
+  padding:.4rem .8rem;cursor:pointer;font-size:.88rem}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#08121f;font-weight:600}
+button.primary:hover{filter:brightness(1.1)}
+button.danger:hover{border-color:var(--err);color:var(--err)}
+.badge{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.78rem;font-weight:600}
+.queued{background:var(--queued)}.running{background:var(--running)}
+.paused{background:var(--paused)}.done{background:var(--done)}
+#tokbox{background:var(--panel2);border:1px solid var(--warn);border-radius:var(--radius);
+  padding:.8rem 1rem;margin:.6rem 0;white-space:pre-wrap;word-break:break-all}
+#login{max-width:420px;margin:8vh auto}
+#login .card{display:grid;gap:.7rem}
+#login input{width:100%}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:var(--radius);
+  padding:1.2rem 1.4rem;max-width:520px;width:92vw}
+dialog::backdrop{background:rgba(5,8,12,.7)}
+dialog h3{margin:0 0 .6rem;color:var(--acc2)}
+dialog p{margin:.2rem 0 .8rem}
+.dlgrow{display:flex;gap:.6rem;justify-content:flex-end;margin-top:1rem}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:1.4rem;background:var(--panel2);
+  border:1px solid var(--acc);border-radius:8px;padding:.5rem 1rem;opacity:0;transition:opacity .3s;z-index:9}
+.toast.show{opacity:1}
+dl.doc{margin:.4rem 0}
+dl.doc dt{color:var(--acc);font-weight:600;margin-top:.55rem}
+dl.doc dd{margin:.1rem 0 0 0;color:var(--text)}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;
+  overflow-x:auto;font-size:.82rem}
+.row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:.05rem .4rem;font-size:.8em}
 </style>
 </head>
 <body>
-<h1>agent-sandbox-relay Verwaltung</h1>
-<div id="login">
-  <p>Login (Nutzername <code id="uhint">admin</code>):</p>
-  <input id="user" placeholder="Nutzername" value="admin">
-  <input type="password" id="pw" placeholder="Passwort">
-  <button id="btn-login">Login</button>
-  <span id="loginmsg" class="muted"></span>
-</div>
-<div id="app" hidden>
-  <p class="muted" id="mode"></p>
-  <button id="btn-refresh">Aktualisieren</button>
-  <button id="btn-logout">Logout</button>
-  <h2>Workers (VM-Agenten)</h2>
-  <table id="wtab"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
-  <p>Neu: <input id="wname" placeholder="Name (optional, z.B. vm1)"> <button id="btn-addw">Worker anlegen</button></p>
-  <h2>Submitters (Absender, je einem Worker zugeordnet)</h2>
-  <table id="stab"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Umziehen</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
-  <p>Neu: <input id="sname" placeholder="Name (optional, z.B. vibe)"> Worker: <select id="sworker"></select> <button id="btn-adds">Submitter anlegen</button></p>
-  <h2>Jobs je Submitter</h2>
-  <div id="jobs"></div>
-  <h2>Speicher</h2>
-  <p id="state" class="muted"></p>
-  <h2>Protokoll (neueste zuerst)</h2>
-  <table id="atab"><thead><tr><th>Zeit (UTC)</th><th>Ereignis</th><th>Details</th></tr></thead><tbody></tbody></table>
+
+<header>
+  <h1>agent-sandbox-<span>relay</span></h1>
+  <div class="muted" id="mode"></div>
+  <nav id="nav">
+    <button data-page="status">Status</button>
+    <button data-page="tokens">Tokens</button>
+    <button data-page="jobs">Jobs</button>
+    <button data-page="audit">Protokoll</button>
+    <button data-page="api">API-Doku</button>
+    <button data-page="logout">Logout</button>
+  </nav>
+</header>
+
+<main>
+
+<section class="page" id="page-login">
+  <div class="card" id="login">
+    <h2 style="margin-top:0">Login</h2>
+    <p class="muted" id="loginmsg"></p>
+    <label>Nutzername <input id="user" placeholder="Nutzername" value="admin" autocomplete="username"></label>
+    <label>Passwort <input type="password" id="pw" placeholder="Passwort" autocomplete="current-password"></label>
+    <button class="primary" id="btn-login">Anmelden</button>
+  </div>
+</section>
+
+<section class="page" id="page-status">
+  <h2>Status</h2>
+  <div class="row">
+    <label class="row" style="gap:.35rem"><input type="checkbox" id="auto" checked> Auto-Refresh (5 s)</label>
+    <button id="btn-status-refresh">Aktualisieren</button>
+    <span class="muted" id="status-ts"></span>
+  </div>
+  <div class="grid">
+    <div class="stat"><b id="st-workers">-</b><small>Workers</small></div>
+    <div class="stat"><b id="st-submitters">-</b><small>Submitters</small></div>
+    <div class="stat"><b id="st-jobs">-</b><small>Jobs im Store</small></div>
+    <div class="stat"><b id="st-files">-</b><small>Dateien im Store</small></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Speicherbudget (Output + Dateien)</h3>
+    <div class="bar"><div id="st-bar"></div></div>
+    <p class="muted" id="st-budget"></p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Konfiguration</h3>
+    <p class="muted">erledigte Jobs je Submitter angezeigt: <span id="st-exec" class="mono"></span></p>
+  </div>
+</section>
+
+<section class="page" id="page-tokens">
+  <h2>Workers <span class="muted">(VM-Agenten)</span></h2>
+  <div class="row"><button class="primary" id="btn-addw">Worker anlegen</button></div>
+  <table id="wtab"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
+  <h2>Submitters <span class="muted">(Absender, je einem Worker zugeordnet)</span></h2>
+  <div class="row"><button class="primary" id="btn-adds">Submitter anlegen</button></div>
+  <table id="stab"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Aktionen</th></tr></thead><tbody></tbody></table>
   <div id="tokbox" hidden></div>
-</div>
+</section>
+
+<section class="page" id="page-jobs">
+  <h2>Jobs je Submitter</h2>
+  <div class="row"><button id="btn-jobs-refresh">Aktualisieren</button></div>
+  <div id="jobs"></div>
+</section>
+
+<section class="page" id="page-audit">
+  <h2>Protokoll <span class="muted">(Audit, neueste zuerst)</span></h2>
+  <div class="row">
+    <label class="row" style="gap:.35rem">Zeilen
+      <select id="audit-limit"><option>10</option><option selected>50</option><option>100</option><option>200</option></select>
+    </label>
+    <button id="btn-audit-refresh">Aktualisieren</button>
+  </div>
+  <table id="atab"><thead><tr><th>Zeit (UTC)</th><th>Ereignis</th><th>Details</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section class="page" id="page-api">
+  <h2>API-Dokumentation</h2>
+  <p class="muted">Inhalt aus <span class="mono">GET /admin/api/usage</span> - dieselbe Struktur wie <span class="mono">GET /usage</span> des Relays.</p>
+  <div id="apidoc"><p class="muted">Lade ...</p></div>
+</section>
+
+</main>
+
+<dialog id="dlg-token">
+  <h3>Token angelegt</h3>
+  <p id="dlg-token-text" class="mono" style="word-break:break-all"></p>
+  <p class="muted">Nur diesmal sichtbar - jetzt sichern.</p>
+  <div class="dlgrow">
+    <button id="dlg-token-copy">Kopieren</button>
+    <button class="primary" id="dlg-token-close">Schliessen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-rename">
+  <h3>Umbenennen</h3>
+  <p class="muted" id="dlg-rename-old"></p>
+  <input id="dlg-rename-name" style="width:100%" maxlength="64">
+  <div class="dlgrow">
+    <button id="dlg-rename-cancel">Abbrechen</button>
+    <button class="primary" id="dlg-rename-save">Speichern</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-confirm">
+  <h3 id="dlg-confirm-title">Sicher?</h3>
+  <p id="dlg-confirm-text"></p>
+  <div class="dlgrow">
+    <button id="dlg-confirm-no">Abbrechen</button>
+    <button class="primary" id="dlg-confirm-yes">Ja</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-worker">
+  <h3>Worker anlegen</h3>
+  <p class="muted">Name optional (leer -> automatisch benannt).</p>
+  <input id="dlg-worker-name" style="width:100%" placeholder="Name, z.B. vm1" maxlength="64">
+  <div class="dlgrow">
+    <button id="dlg-worker-cancel">Abbrechen</button>
+    <button class="primary" id="dlg-worker-ok">Anlegen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-submitter">
+  <h3>Submitter anlegen</h3>
+  <p class="muted">Name optional (leer -> automatisch benannt).</p>
+  <input id="dlg-submitter-name" style="width:100%" placeholder="Name, z.B. vibe" maxlength="64">
+  <p>Worker: <select id="dlg-submitter-worker"></select></p>
+  <div class="dlgrow">
+    <button id="dlg-submitter-cancel">Abbrechen</button>
+    <button class="primary" id="dlg-submitter-ok">Anlegen</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
 <script nonce="__NONCE__">
 "use strict";
 var USER = sessionStorage.getItem("relayadminuser") || "admin";
 var PW = sessionStorage.getItem("relayadminpw") || "";
+var statusTimer = null;
+var apiDocLoaded = false;
+
 function hdr(extra){ var h = {"Authorization": "Basic " + btoa(USER + ":" + PW)}; if (extra) { for (var k in extra) { h[k] = extra[k]; } } return h; }
 async function api(path, opts){
   opts = opts || {};
@@ -56,120 +228,323 @@ async function api(path, opts){
   var r = await fetch(path, opts);
   if (r.status === 401){ showLogin("Login fehlgeschlagen"); throw new Error("401"); }
   if (r.status === 429){ showLogin("Gesperrt: zu viele Fehlversuche (Retry-After " + r.headers.get("Retry-After") + " s)"); throw new Error("429"); }
-  if (r.status === 503){ alert("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)"); throw new Error("503"); }
-  if (!r.ok){ var t = await r.text(); alert("Fehler " + r.status + ": " + t); throw new Error(String(r.status)); }
+  if (r.status === 503){ toast("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)"); throw new Error("503"); }
+  if (!r.ok){ var t = await r.text(); toast("Fehler " + r.status + ": " + t.slice(0, 200)); throw new Error(String(r.status)); }
   return r.json();
 }
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
+function toast(msg){
+  var t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(function(){ t.classList.remove("show"); }, 2600);
+}
+function fmtBytes(n){
+  if (n === null || n === undefined){ return "-"; }
+  var u = ["B", "KiB", "MiB", "GiB"], i = 0, v = Number(n);
+  while (v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
+  return (i ? v.toFixed(1) : v) + " " + u[i];
+}
+function fmtTs(ts){
+  try { return new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19); } catch (e) { return String(ts); }
+}
+
+/* ---------- Dialoge (nativ <dialog>) ---------- */
+var dlgToken = document.getElementById("dlg-token");
+var dlgRename = document.getElementById("dlg-rename");
+var dlgConfirm = document.getElementById("dlg-confirm");
+var dlgWorker = document.getElementById("dlg-worker");
+var dlgSubmitter = document.getElementById("dlg-submitter");
+
+function showToken(tok, name){
+  document.getElementById("dlg-token-text").textContent = "Token fuer '" + name + "':\n" + tok;
+  dlgToken.showModal();
+}
+function dlgConfirm(title, text){
+  return new Promise(function(res){
+    document.getElementById("dlg-confirm-title").textContent = title;
+    document.getElementById("dlg-confirm-text").textContent = text;
+    var yes = document.getElementById("dlg-confirm-yes");
+    var no = document.getElementById("dlg-confirm-no");
+    function done(v){ dlgConfirm.close(); yes.removeEventListener("click", ok); no.removeEventListener("click", cancel); res(v); }
+    function ok(){ done(true); }
+    function cancel(){ done(false); }
+    yes.addEventListener("click", ok);
+    no.addEventListener("click", cancel);
+    dlgConfirm.showModal();
+  });
+}
+function dlgRename(oldName){
+  return new Promise(function(res){
+    document.getElementById("dlg-rename-old").textContent = "Alter Name: " + oldName;
+    var inp = document.getElementById("dlg-rename-name");
+    inp.value = oldName;
+    var save = document.getElementById("dlg-rename-save");
+    var cancel = document.getElementById("dlg-rename-cancel");
+    function done(v){ dlgRename.close(); save.removeEventListener("click", ok); cancel.removeEventListener("click", cancel_); res(v); }
+    function ok(){ var v = inp.value.trim(); done(v ? v : null); }
+    function cancel_(){ done(null); }
+    save.addEventListener("click", ok);
+    cancel.addEventListener("click", cancel_);
+    dlgRename.showModal();
+    inp.focus();
+  });
+}
+function dlgAddWorker(){
+  return new Promise(function(res){
+    var inp = document.getElementById("dlg-worker-name");
+    inp.value = "";
+    var okb = document.getElementById("dlg-worker-ok");
+    var cancelb = document.getElementById("dlg-worker-cancel");
+    function done(v){ dlgWorker.close(); okb.removeEventListener("click", ok); cancelb.removeEventListener("click", cancel_); res(v); }
+    function ok(){ done(inp.value.trim() || null); }
+    function cancel_(){ done(undefined); }
+    okb.addEventListener("click", ok);
+    cancelb.addEventListener("click", cancel_);
+    dlgWorker.showModal();
+    inp.focus();
+  });
+}
+function dlgAddSubmitter(workers){
+  return new Promise(function(res){
+    var sel = document.getElementById("dlg-submitter-worker");
+    sel.innerHTML = "";
+    workers.forEach(function(w){
+      var o = document.createElement("option");
+      o.value = w.id; o.textContent = w.name;
+      sel.appendChild(o);
+    });
+    var inp = document.getElementById("dlg-submitter-name");
+    inp.value = "";
+    if (!workers.length){ res(null); return; }
+    var okb = document.getElementById("dlg-submitter-ok");
+    var cancelb = document.getElementById("dlg-submitter-cancel");
+    function done(n, w){ dlgSubmitter.close(); okb.removeEventListener("click", ok); cancelb.removeEventListener("click", cancel_); res(n === undefined ? null : {name: n, worker_id: w}); }
+    function ok(){ done(inp.value.trim() || null, sel.value); }
+    function cancel_(){ done(undefined, null); }
+    okb.addEventListener("click", ok);
+    cancelb.addEventListener("click", cancel_);
+    dlgSubmitter.showModal();
+    inp.focus();
+  });
+}
+
+/* ---------- Seitennavigation ---------- */
+var PAGES = ["login", "status", "tokens", "jobs", "audit", "api"];
+function showPage(name){
+  if (name === "logout"){ logout(); return; }
+  PAGES.forEach(function(p){
+    var el = document.getElementById("page-" + p);
+    if (el){ el.classList.toggle("active", p === name); }
+  });
+  document.querySelectorAll("nav button").forEach(function(b){
+    b.classList.toggle("active", b.dataset.page === name);
+  });
+  if (location.hash !== "#" + name){ location.hash = "#" + name; }
+  if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+  if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, 5000); } }
+  if (name === "tokens"){ refreshTokens(); }
+  if (name === "jobs"){ refreshJobs(); }
+  if (name === "audit"){ refreshAudit(); }
+  if (name === "api" && !apiDocLoaded){ loadApiDoc(); }
+}
+function pageFromHash(){
+  var h = location.hash.replace("#", "");
+  return PAGES.indexOf(h) > 0 ? h : "status";
+}
 function showLogin(msg){
-  document.getElementById("app").hidden = true;
-  document.getElementById("login").hidden = false;
+  PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
   if (msg){ document.getElementById("loginmsg").textContent = msg; }
 }
 async function doLogin(){
   USER = document.getElementById("user").value || "admin";
   PW = document.getElementById("pw").value;
-  try { await refresh(); sessionStorage.setItem("relayadminuser", USER); sessionStorage.setItem("relayadminpw", PW); document.getElementById("login").hidden = true; document.getElementById("app").hidden = false; }
-  catch (e){}
+  try {
+    await api("/admin/api/state");
+    sessionStorage.setItem("relayadminuser", USER);
+    sessionStorage.setItem("relayadminpw", PW);
+    document.getElementById("mode").textContent = "angemeldet als " + USER;
+    showPage(pageFromHash());
+  } catch (e){}
 }
-function logout(){ sessionStorage.removeItem("relayadminuser"); sessionStorage.removeItem("relayadminpw"); location.reload(); }
-function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
-function showToken(tok, name){
-  var b = document.getElementById("tokbox");
-  b.hidden = false;
-  b.textContent = "Token fuer '" + name + "' (nur diesmal sichtbar, jetzt sichern):\n" + tok;
+function logout(){
+  sessionStorage.removeItem("relayadminuser");
+  sessionStorage.removeItem("relayadminpw");
+  location.hash = "";
+  location.reload();
 }
-async function refresh(){
-  var d = await api("/admin/api/tokens");
-  document.getElementById("mode").textContent = "Admin-Modus: " + d.admin_mode + " | Workers: " + d.workers.length + " | Submitters: " + d.submitters.length;
+
+/* ---------- Statusseite ---------- */
+async function refreshStatus(){
+  var d;
+  try { d = await api("/admin/api/state"); } catch (e){ return; }
+  document.getElementById("st-workers").textContent = d.workers;
+  document.getElementById("st-submitters").textContent = d.submitters;
+  document.getElementById("st-jobs").textContent = d.jobs;
+  document.getElementById("st-files").textContent = d.files;
+  var pct = d.budget ? Math.min(100, Math.round(d.data_bytes * 100 / d.budget)) : 0;
+  document.getElementById("st-bar").style.width = pct + "%";
+  document.getElementById("st-budget").textContent = fmtBytes(d.data_bytes) + " von " + fmtBytes(d.budget) + " belegt (" + pct + " %)";
+  document.getElementById("st-exec").textContent = d.exec_jobs_je_submitter;
+  document.getElementById("status-ts").textContent = "Stand " + new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+
+/* ---------- Tokensseite ---------- */
+async function refreshTokens(){
+  var d;
+  try { d = await api("/admin/api/tokens"); } catch (e){ return; }
+  document.getElementById("mode").textContent = "Admin-Modus: " + d.admin_mode + " | " + d.workers.length + " Worker, " + d.submitters.length + " Submitter";
   var wt = document.querySelector("#wtab tbody"); wt.innerHTML = "";
-  var sw = document.getElementById("sworker"); sw.innerHTML = "";
   d.workers.forEach(function(w){
-    wt.insertAdjacentHTML("beforeend", "<tr><td>" + esc(w.name) + (w.legacy ? " (legacy)" : "") + "</td><td>" + esc(w.id) + "</td><td>" + esc(w.created) + "</td><td><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button></td><td><button data-id='" + esc(w.id) + "' class='delw'>loeschen</button></td></tr>");
-    sw.insertAdjacentHTML("beforeend", "<option value='" + esc(w.id) + "'>" + esc(w.name) + "</option>");
+    wt.insertAdjacentHTML("beforeend",
+      "<tr><td>" + esc(w.name) + (w.legacy ? " <span class='badge queued'>legacy</span>" : "") +
+      "</td><td class='mono'>" + esc(w.id) + "</td><td class='muted'>" + esc(w.created) + "</td>" +
+      "<td><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button> " +
+      "<button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='delw danger'>loeschen</button></td></tr>");
   });
   var st = document.querySelector("#stab tbody"); st.innerHTML = "";
   d.submitters.forEach(function(s){
     var opts = d.workers.map(function(w){ return "<option value='" + esc(w.id) + "'" + (w.id === s.worker_id ? " selected" : "") + ">" + esc(w.name) + "</option>"; }).join("");
-    st.insertAdjacentHTML("beforeend", "<tr><td>" + esc(s.name) + (s.legacy ? " (legacy)" : "") + "</td><td>" + esc(s.id) + "</td><td>" + esc(s.worker_name) + "</td><td>" + esc(s.created) + "</td><td><select id='as-" + esc(s.id) + "'>" + opts + "</select> <button data-id='" + esc(s.id) + "' class='ass'>speichern</button></td><td><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button></td><td><button data-id='" + esc(s.id) + "' class='dels'>loeschen</button></td></tr>");
+    st.insertAdjacentHTML("beforeend",
+      "<tr><td>" + esc(s.name) + (s.legacy ? " <span class='badge queued'>legacy</span>" : "") +
+      "</td><td class='mono'>" + esc(s.id) + "</td><td><select id='as-" + esc(s.id) + "'>" + opts + "</select></td>" +
+      "<td class='muted'>" + esc(s.created) + "</td>" +
+      "<td><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button> " +
+      "<button data-id='" + esc(s.id) + "' class='ass'>speichern</button> " +
+      "<button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='dels danger'>loeschen</button></td></tr>");
   });
-  Array.prototype.forEach.call(document.querySelectorAll(".delw"), function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "worker"); }); });
-  Array.prototype.forEach.call(document.querySelectorAll(".dels"), function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "submitter"); }); });
-  Array.prototype.forEach.call(document.querySelectorAll(".ass"), function(b){ b.addEventListener("click", function(){ assign(b.dataset.id); }); });
-  Array.prototype.forEach.call(document.querySelectorAll(".renw"), function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
-  Array.prototype.forEach.call(document.querySelectorAll(".rens"), function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
-  await refreshJobs();
-  var stt = await api("/admin/api/state");
-  document.getElementById("state").textContent = "Budget belegt: " + stt.data_bytes + " / " + stt.budget + " Bytes | Jobs: " + stt.jobs + " | Dateien: " + stt.files + " | erledigte Jobs je Submitter angezeigt: " + stt.exec_jobs_je_submitter;
-  var au = await api("/admin/api/audit?limit=50");
-  var at = document.querySelector("#atab tbody"); at.innerHTML = "";
-  au.events.forEach(function(e){
-    var rest = JSON.parse(JSON.stringify(e)); delete rest.ts; delete rest.event;
-    at.insertAdjacentHTML("beforeend", "<tr><td>" + esc(e.ts) + "</td><td>" + esc(e.event) + "</td><td>" + esc(JSON.stringify(rest)) + "</td></tr>");
-  });
-}
-async function refreshJobs(){
-  var d = await api("/admin/api/jobs");
-  var box = document.getElementById("jobs");
-  box.innerHTML = "";
-  d.submitters.forEach(function(s){
-    var html = "<h3>" + esc(s.name) + " <span class='muted'>(" + esc(s.id) + ", offen: " + s.offen.length + ", erledigt angezeigt: " + s.erledigt.length + ")</span></h3>";
-    html += "<table><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit</th><th>cmd (gekuerzt)</th><th></th></tr></thead><tbody>";
-    s.offen.concat(s.erledigt).forEach(function(j){
-      html += "<tr><td><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td>" + esc(j.id) + "</td><td>" + esc(j.worker) + "</td><td>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td>" + j.out_bytes + "</td><td>" + esc(new Date(j.ts * 1000).toISOString()) + "</td><td class='cmd'>" + esc(j.cmd) + "</td><td class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></td></tr>";
-    });
-    html += "</tbody></table>";
-    box.insertAdjacentHTML("beforeend", html);
-  });
-  Array.prototype.forEach.call(document.querySelectorAll(".jobbtns"), function(td){
-    var jid = td.dataset.id, st = td.dataset.status;
-    if (st === "queued"){ td.innerHTML = "<button class='pau'>anhalten</button> <button class='del'>loeschen</button>"; }
-    else if (st === "paused"){ td.innerHTML = "<button class='res'>fortsetzen</button> <button class='del'>loeschen</button>"; }
-    else if (st === "running"){ td.innerHTML = "<button class='del'>loeschen</button>"; }
-    else { td.innerHTML = "<button class='del'>loeschen</button>"; }
-    var b;
-    if ((b = td.querySelector(".pau"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }); }
-    if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
-    if ((b = td.querySelector(".del"))){ b.addEventListener("click", function(){ if (confirm("Job loeschen?")){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
-  });
+  document.querySelectorAll(".delw").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "worker", b.dataset.name); }); });
+  document.querySelectorAll(".dels").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "submitter", b.dataset.name); }); });
+  document.querySelectorAll(".ass").forEach(function(b){ b.addEventListener("click", function(){ assign(b.dataset.id); }); });
+  document.querySelectorAll(".renw").forEach(function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
+  document.querySelectorAll(".rens").forEach(function(b){ b.addEventListener("click", function(){ rename(b.dataset.id, b.dataset.name); }); });
 }
 async function addWorker(){
-  var n = document.getElementById("wname").value.trim();
+  var n = await dlgAddWorker();
+  if (n === undefined){ return; }
   var d = await api("/admin/api/tokens", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "worker", name: n}) });
   showToken(d.token, d.name);
-  document.getElementById("wname").value = "";
-  refresh();
+  refreshTokens();
 }
 async function addSubmitter(){
-  var n = document.getElementById("sname").value.trim();
-  var w = document.getElementById("sworker").value;
-  if (!w){ return; }
-  var d = await api("/admin/api/tokens", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "submitter", name: n, worker_id: w}) });
+  var toks = await api("/admin/api/tokens");
+  var v = await dlgAddSubmitter(toks.workers);
+  if (!v){ return; }
+  var d = await api("/admin/api/tokens", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "submitter", name: v.name, worker_id: v.worker_id}) });
   showToken(d.token, d.name);
-  document.getElementById("sname").value = "";
-  refresh();
+  refreshTokens();
 }
 async function rename(tid, alt){
-  var n = prompt("Neuer Name fuer '" + alt + "':", alt);
-  if (n === null || !n.trim()){ return; }
-  await api("/admin/api/tokens/" + tid, { method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: n.trim()}) });
-  refresh();
+  var n = await dlgRename(alt);
+  if (!n){ return; }
+  await api("/admin/api/tokens/" + tid, { method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: n}) });
+  refreshTokens();
 }
 async function assign(tid){
   var v = document.getElementById("as-" + tid).value;
   await api("/admin/api/tokens/" + tid + "/assign", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({worker_id: v}) });
-  refresh();
+  toast("Submitter umgezogen");
+  refreshTokens();
 }
-async function del(tid, role){
-  if (!confirm("Token loeschen? Der Zugang endet sofort.")){ return; }
+async function del(tid, role, name){
+  var ok = await dlgConfirm(role + " loeschen", "Token '" + name + "' loeschen? Der Zugang endet sofort.");
+  if (!ok){ return; }
   await api("/admin/api/tokens/" + tid, { method: "DELETE" });
-  refresh();
+  refreshTokens();
 }
-if (PW){ doLogin(); }
+
+/* ---------- Jobsseite ---------- */
+async function refreshJobs(){
+  var d;
+  try { d = await api("/admin/api/jobs"); } catch (e){ return; }
+  var box = document.getElementById("jobs");
+  box.innerHTML = "";
+  d.submitters.forEach(function(s){
+    var html = "<div class='card'><h3 style='margin-top:0'>" + esc(s.name) + " <span class='muted'>(" + esc(s.id) + ", offen: " + s.offen.length + ", erledigt angezeigt: " + s.erledigt.length + ")</span></h3>";
+    html += "<table><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit (UTC)</th><th>cmd (gekuerzt)</th><th></th></tr></thead><tbody>";
+    s.offen.concat(s.erledigt).forEach(function(j){
+      html += "<tr><td><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td class='mono'>" + esc(j.id) + "</td><td>" + esc(j.worker) + "</td><td>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td>" + fmtBytes(j.out_bytes) + "</td><td class='muted'>" + esc(fmtTs(j.ts)) + "</td><td class='mono'>" + esc(j.cmd) + "</td><td class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></td></tr>";
+    });
+    html += "</tbody></table></div>";
+    box.insertAdjacentHTML("beforeend", html);
+  });
+  document.querySelectorAll(".jobbtns").forEach(function(td){
+    var jid = td.dataset.id, st = td.dataset.status;
+    if (st === "queued"){ td.innerHTML = "<button class='pau'>anhalten</button> <button class='del danger'>loeschen</button>"; }
+    else if (st === "paused"){ td.innerHTML = "<button class='res'>fortsetzen</button> <button class='del danger'>loeschen</button>"; }
+    else { td.innerHTML = "<button class='del danger'>loeschen</button>"; }
+    var b;
+    if ((b = td.querySelector(".pau"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }); }
+    if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
+    if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await dlgConfirm("Job loeschen", "Job " + jid + " loeschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
+  });
+}
+
+/* ---------- Protokollseite ---------- */
+async function refreshAudit(){
+  var limit = document.getElementById("audit-limit").value;
+  var d;
+  try { d = await api("/admin/api/audit?limit=" + limit); } catch (e){ return; }
+  var at = document.querySelector("#atab tbody"); at.innerHTML = "";
+  d.events.forEach(function(e){
+    var rest = JSON.parse(JSON.stringify(e)); delete rest.ts; delete rest.event;
+    at.insertAdjacentHTML("beforeend", "<tr><td class='muted'>" + esc(fmtTs(e.ts)) + "</td><td><span class='badge queued'>" + esc(e.event) + "</span></td><td class='mono'>" + esc(JSON.stringify(rest)) + "</td></tr>");
+  });
+}
+
+/* ---------- API-Doku-Seite ---------- */
+function dl(items){
+  var html = "<dl class='doc'>";
+  items.forEach(function(kv){ html += "<dt>" + esc(kv[0]) + "</dt><dd>" + esc(kv[1]) + "</dd>"; });
+  return html + "</dl>";
+}
+async function loadApiDoc(){
+  var d;
+  try { d = await api("/admin/api/usage"); } catch (e){ return; }
+  var box = document.getElementById("apidoc");
+  var html = "";
+  html += "<div class='card'><h3 style='margin-top:0'>" + esc(d.service) + "</h3><p>" + esc(d.auth) + "</p></div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Rollen</h3>" + dl(Object.entries(d.rollen)) + "</div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Grenzen</h3><table><tbody>";
+  Object.entries(d.grenzen).forEach(function(kv){
+    var v = kv[1];
+    html += "<tr><th>" + esc(kv[0]) + "</th><td class='mono'>" + esc(String(v)) + "</td></tr>";
+  });
+  html += "</tbody></table></div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Endpunkte</h3>" + dl(Object.entries(d.endpunkte).map(function(kv){ return [kv[0], typeof kv[1] === "object" ? JSON.stringify(kv[1]) : String(kv[1])]; })) + "</div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Verwaltungs-API</h3>" + dl(Object.entries(d.verwaltung_api)) + "</div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Dateitransfer</h3>" + dl(Object.entries(d.dateitransfer)) + "</div>";
+  html += "<div class='card'><h3 style='margin-top:0'>Beispiele</h3><pre>" + esc(d.beispiele.join("\n\n")) + "</pre></div>";
+  box.innerHTML = html;
+  apiDocLoaded = true;
+}
+
+/* ---------- Ereignisbindung (alles per addEventListener, CSP-Nonce) ---------- */
 document.getElementById("btn-login").addEventListener("click", doLogin);
-document.getElementById("btn-refresh").addEventListener("click", refresh);
-document.getElementById("btn-logout").addEventListener("click", logout);
+document.getElementById("pw").addEventListener("keydown", function(e){ if (e.key === "Enter"){ doLogin(); } });
+document.getElementById("btn-status-refresh").addEventListener("click", refreshStatus);
+document.getElementById("auto").addEventListener("change", function(){
+  if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+  if (document.getElementById("auto").checked && document.getElementById("page-status").classList.contains("active")){
+    statusTimer = setInterval(refreshStatus, 5000);
+  }
+});
 document.getElementById("btn-addw").addEventListener("click", addWorker);
 document.getElementById("btn-adds").addEventListener("click", addSubmitter);
+document.getElementById("btn-jobs-refresh").addEventListener("click", refreshJobs);
+document.getElementById("btn-audit-refresh").addEventListener("click", refreshAudit);
+document.getElementById("audit-limit").addEventListener("change", refreshAudit);
+document.getElementById("dlg-token-close").addEventListener("click", function(){ dlgToken.close(); });
+document.getElementById("dlg-token-copy").addEventListener("click", function(){
+  var t = document.getElementById("dlg-token-text").textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t.split("\n").pop()).then(function(){ toast("kopiert"); }, function(){ toast("Kopieren nicht moeglich - manuell markieren"); });
+  } else { toast("Kopieren nicht moeglich - manuell markieren"); }
+});
+document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
+window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });
+
+if (PW){ doLogin(); } else { showLogin(""); }
 </script>
 </body>
 </html>

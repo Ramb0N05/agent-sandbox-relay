@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from . import auth, config, store
+from . import auth, config, jobs, store
 
 router = APIRouter()
 security = HTTPBasic(auto_error=False)
@@ -57,6 +57,13 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
     return {"budget": config.budget(), "data_bytes": store.data_bytes, "jobs": len(store.jobs),
             "files": len(store.files), "workers": len(store.workers), "submitters": len(store.submitters),
             "exec_jobs_je_submitter": config.exec_jobs_shown()}
+
+
+@router.get("/admin/api/usage")
+async def admin_usage(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # API-Doku fuer die Verwaltungsoberflaeche: dieselbe Struktur wie GET /usage, aber mit der HTTP-Basic-Session statt eines Bearer-Tokens
+    await auth.require_admin(request, credentials)
+    return jobs.usage_data()
 
 
 @router.get("/admin/api/tokens")

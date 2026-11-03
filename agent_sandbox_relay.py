@@ -1,10 +1,10 @@
 # agent_sandbox_relay.py - Entry (elfte Runde): App-Assembly und Start; Logik im Paket relay/
 # Quelle: https://github.com/Ramb0N05/agent-sandbox-relay (Branch main)
-# Ausfuehrung: uvicorn agent_sandbox_relay:app (siehe Dockerfile); Docker-Service heisst agent-sandbox-relay
+# Ausführung: uvicorn agent_sandbox_relay:app (siehe Dockerfile); Docker-Service heisst agent-sandbox-relay
 # Module: relay/config.py (Env, Budget-Syntax), relay/store.py (Zustand, Persistenz, Audit, OOM-Eviction),
 # relay/auth.py (Rollen-Tokens, Admin-Login mit Lockout), relay/jobs.py (Job-Endpunkte inkl. /usage),
 # relay/files.py (Datei-Endpunkte), relay/admin.py (Verwaltung) mit relay/templates/admin.html (Admin-UI).
-# keine oeffentliche API-Doku: /docs, /redoc, /openapi.json antworten 404 (Nutzerentscheidung 03.11.2026)
+# keine öffentliche API-Doku: /docs, /redoc, /openapi.json antworten 404 (Nutzerentscheidung 03.11.2026)
 from fastapi import FastAPI
 
 from relay import store

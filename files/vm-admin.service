@@ -1,0 +1,16 @@
+[Unit]
+Description=vibe-sandbox VM-Verwaltung (Port 80, nur Host-Zugriff)
+After=network.target
+
+[Service]
+User=vibe
+ExecStart=/usr/local/bin/vmadmin
+Restart=always
+RestartSec=5
+# Port 80 ohne root: AmbientCapabilities uebertraegt CAP_NET_BIND_SERVICE an den
+# Prozess, CapabilityBoundingSet schneidet alles andere ab (minimal exposure).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

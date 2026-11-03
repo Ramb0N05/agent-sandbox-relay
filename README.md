@@ -34,6 +34,31 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - files/ttyd-vibe.service: systemd-Unit des Web-Terminals (nur vom Host
   erreichbar, Basic Auth, max. 2 Clients, ZMODEM aktiviert), Ziel
   /etc/systemd/system/.
+- files/vmadmin: Verwaltungs-UI der VM auf Port 80 (fuenfzehnte Runde,
+  Stil wie die Relay-Verwaltung: Dark-Theme, Hash-Navigation, native
+  dialog-Modals, CSP-Nonce, Login-Card mit sessionStorage, Auto-Refresh,
+  401 ohne WWW-Authenticate-Challenge). Nur Python-stdlib (http.server,
+  ThreadingHTTPServer); Port 80 als User vibe laeuft dank
+  AmbientCapabilities=CAP_NET_BIND_SERVICE in der Unit (Ports unter 1024
+  brauchen sonst root; CapabilityBoundingSet schneidet weitere Caps ab,
+  NoNewPrivileges entfaellt, weil vmadmin sudo fuer systemctl/journalctl
+  benutzt). Funktionen: Status (Hostname, Kernel, Uptime, Last, RAM- und
+  Disk-Belegung als Balken, Dienst-Zustaende, Token-Maske), Worker-Token
+  setzen (8-128 ASCII ohne Whitespace, atomar nach
+  /home/vibe/.config/agent-sandbox/worker-token, danach Neustart des
+  Agents, weil der das Token nur beim Start liest), ttyd-Passwort setzen
+  (1-64 druckbare ASCII ohne Doppelpunkt und Whitespace - ttyd kennt nur
+  -c user:password und kein Credential-File; die Unit wird neu geschrieben,
+  daemon-reload und Neustart), eigenes Admin-Passwort aendern (sha256-Hash
+  in /home/vibe/.config/agent-sandbox/admin-hash; der Hash liegt nur als
+  sha256 in der Datei), Dienst-Neustarts und das Agent-Journal
+  (journalctl -n 30). Login-Lockout wie im Relay (5 Fehlversuche, 300 s,
+  Verdopplung bis 3600 s, 429 mit Retry-After). Installationsziel
+  /usr/local/bin/vmadmin, owner vibe:vibe, 0700.
+- files/vm-admin.service: systemd-Unit der Verwaltung (User vibe,
+  Restart=always, AmbientCapabilities=CAP_NET_BIND_SERVICE,
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE), Ziel
+  /etc/systemd/system/.
 - vm/virt-install.sh: Anlage-Befehl fuer virt-install auf dem Host
   (q35, SeaBIOS-Import, Device-Minimierung, Serial-Only).
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
@@ -53,6 +78,12 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   Subdomain des Queue-Services (ENDPOINT des Agenten).
 - <ttyd-passwort> in cloud-init und files/ttyd-vibe.service: Basic-Auth-
   Passwort des Web-Terminals.
+- <vm-admin-passwort> in cloud-init (nur runcmd): Anfangs-Passwort der
+  VM-Verwaltung (Login "admin"). In der VM liegt nur der sha256-Hash
+  (/home/vibe/.config/agent-sandbox/admin-hash, 0600, owner vibe);
+  aenderbar ueber die UI. Das Worker-Token braucht keinen Platzhalter
+  mehr: der Agent liest es aus worker-token, falls die Datei existiert
+  (sonst greift die Konstante als Fallback).
 
 ## Dateitransfer
 

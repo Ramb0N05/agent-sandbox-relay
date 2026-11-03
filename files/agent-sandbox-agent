@@ -6,13 +6,33 @@
 # (provisioniert normalerweise per cloud-init, siehe cloud-init/vibe-sandbox-user-data.yaml)
 import http.client
 import json
+import os
 import ssl
 import subprocess
 import sys
 import time
 from urllib.parse import urlsplit
 
-TOKEN = "<agent-sandbox-relay-worker-token>"
+# Worker-Token: Datei vor Konstante (vmadmin schreibt /home/vibe/.config/agent-sandbox/worker-token,
+# danach systemctl restart agent-sandbox-agent - das Token wird nur beim Start gelesen).
+TOKEN_FILE = os.environ.get(
+    "AGENT_SANDBOX_TOKEN_FILE",
+    "/home/vibe/.config/agent-sandbox/worker-token",
+)
+
+
+def _load_token():
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            t = f.read().strip()
+        if t:
+            return t
+    except OSError:
+        pass
+    return "<agent-sandbox-relay-worker-token>"
+
+
+TOKEN = _load_token()
 ENDPOINT = "https://<agent-sandbox-relay-domain>"
 POLL_TIMEOUT = 310  # Client-Deckel knapp ueber dem serverseitigen Long-Poll (300 s)
 CMAX = 900  # Ausfuehrungs-Deckel je Job (Sekunden)

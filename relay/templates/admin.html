@@ -206,10 +206,10 @@ table.rwd td.cmdcell{font-size:.8rem}
     <div class="row"><button class="primary" id="btn-set-exec">Anzahl speichern</button></div>
   </div>
   <div class="card">
-    <h3 style="margin-top:0">Nur per Stack-Umgebung aenderbar (Compose/Portainer, Neustart noetig)</h3>
+    <h3 style="margin-top:0">Nur per Stack-Umgebung änderbar (Compose/Portainer, Neustart nötig)</h3>
     <table id="fixtab" class="rwd"><tbody></tbody></table>
   </div>
-  <p class="muted">Aenderungen hier gelten sofort und ueberleben Neustarts (settings.json im Daten-Verzeichnis). Die fixen Grenzen oben haengen an der Start-Umgebung des Containers.</p>
+  <p class="muted">Änderungen hier gelten sofort und überleben Neustarts (settings.json im Daten-Verzeichnis). Die fixen Grenzen oben hängen an der Start-Umgebung des Containers.</p>
 </section>
 
 </main>
@@ -267,7 +267,7 @@ table.rwd td.cmdcell{font-size:.8rem}
 <dialog id="dlg-cmd">
   <h3 id="dlg-cmd-title">Job</h3>
   <p class="muted" id="dlg-cmd-meta"></p>
-  <h3 style="margin-top:.4rem">cmd (vollstaendig)</h3>
+  <h3 style="margin-top:.4rem">cmd (vollständig)</h3>
   <pre id="dlg-cmd-cmd" class="mono"></pre>
   <h3>Output</h3>
   <pre id="dlg-cmd-out" class="mono"></pre>
@@ -330,13 +330,13 @@ var dlgSubmitter = document.getElementById("dlg-submitter");
 var dlgCmd = document.getElementById("dlg-cmd");
 
 function showCmd(jid){
-  // vollstaendiger cmd aus GET /admin/api/jobs/<id> (das Listing kuerzt bei 80 Zeichen)
+  // vollständiger cmd aus GET /admin/api/jobs/<id> (das Listing kürzt bei 80 Zeichen)
   api("/admin/api/jobs/" + encodeURIComponent(jid)).then(function(d){
     document.getElementById("dlg-cmd-title").textContent = "Job " + d.id;
     document.getElementById("dlg-cmd-meta").textContent =
       d.status + " | Worker: " + d.worker + " | Submitter: " + d.submitter +
       " | rc: " + (d.rc === null ? "-" : d.rc) + " | Zeit: " + fmtTs(d.ts) +
-      " | Output: " + fmtBytes(d.out_bytes) + (d.output_gekuerzt ? " (im Dialog gekuerzt)" : "");
+      " | Output: " + fmtBytes(d.out_bytes) + (d.output_gekuerzt ? " (im Dialog gekürzt)" : "");
     document.getElementById("dlg-cmd-cmd").textContent = d.cmd || "(leer)";
     document.getElementById("dlg-cmd-out").textContent = d.output === null || d.output === undefined ? "(kein Output)" : d.output;
     dlgCmd.showModal();
@@ -344,7 +344,7 @@ function showCmd(jid){
 }
 
 function showToken(tok, name){
-  document.getElementById("dlg-token-text").textContent = "Token fuer '" + name + "':\n" + tok;
+  document.getElementById("dlg-token-text").textContent = "Token für '" + name + "':\n" + tok;
   dlgToken.showModal();
 }
 function showConfirm(title, text){
@@ -444,17 +444,25 @@ function showLogin(msg){
   PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
   if (msg){ document.getElementById("loginmsg").textContent = msg; }
 }
-async function doLogin(){
-  USER = document.getElementById("user").value || "admin";
-  PW = document.getElementById("pw").value;
+async function tryLogin(user, pw, ausSession){
+  USER = user; PW = pw;
   try {
     await api("/admin/api/state");
     sessionStorage.setItem("relayadminuser", USER);
     sessionStorage.setItem("relayadminpw", PW);
     document.getElementById("mode").textContent = "angemeldet als " + USER;
     showPage(pageFromHash());
-  } catch (e){}
+    return true;
+  } catch (e){
+    if (ausSession){
+      PW = "";
+      sessionStorage.removeItem("relayadminuser");
+      sessionStorage.removeItem("relayadminpw");
+    }
+    return false;
+  }
 }
+async function doLogin(){ return tryLogin(document.getElementById("user").value || "admin", document.getElementById("pw").value, false); }
 function logout(){
   sessionStorage.removeItem("relayadminuser");
   sessionStorage.removeItem("relayadminpw");
@@ -488,7 +496,7 @@ async function refreshTokens(){
       "<tr><td data-label='Name'>" + esc(w.name) + (w.legacy ? " <span class='badge queued'>legacy</span>" : "") +
       "</td><td data-label='ID' class='mono'>" + esc(w.id) + "</td><td data-label='angelegt' class='muted'>" + esc(fmtIso(w.created)) + "</td>" +
       "<td data-label='Aktionen'><span class='btnrow'><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button> " +
-      "<button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='delw danger'>loeschen</button></span></td></tr>");
+      "<button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='delw danger'>löschen</button></span></td></tr>");
   });
   var st = document.querySelector("#stab tbody"); st.innerHTML = "";
   d.submitters.forEach(function(s){
@@ -499,7 +507,7 @@ async function refreshTokens(){
       "<td data-label='angelegt' class='muted'>" + esc(fmtIso(s.created)) + "</td>" +
       "<td data-label='Aktionen'><span class='btnrow'><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button> " +
       "<button data-id='" + esc(s.id) + "' class='ass'>speichern</button> " +
-      "<button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='dels danger'>loeschen</button></span></td></tr>");
+      "<button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='dels danger'>löschen</button></span></td></tr>");
   });
   document.querySelectorAll(".delw").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "worker", b.dataset.name); }); });
   document.querySelectorAll(".dels").forEach(function(b){ b.addEventListener("click", function(){ del(b.dataset.id, "submitter", b.dataset.name); }); });
@@ -535,7 +543,7 @@ async function assign(tid){
   refreshTokens();
 }
 async function del(tid, role, name){
-  var ok = await showConfirm(role + " loeschen", "Token '" + name + "' loeschen? Der Zugang endet sofort.");
+  var ok = await showConfirm(role + " löschen", "Token '" + name + "' löschen? Der Zugang endet sofort.");
   if (!ok){ return; }
   await api("/admin/api/tokens/" + tid, { method: "DELETE" });
   refreshTokens();
@@ -551,20 +559,20 @@ async function refreshJobs(){
     var html = "<div class='card'><h3 style='margin-top:0'>" + esc(s.name) + " <span class='muted'>(" + esc(s.id) + ", offen: " + s.offen.length + ", erledigt angezeigt: " + s.erledigt.length + ")</span></h3>";
     html += "<table class='rwd'><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit (lokal)</th><th>cmd</th><th>Aktionen</th></tr></thead><tbody>";
     s.offen.concat(s.erledigt).forEach(function(j){
-      html += "<tr><td data-label='Status'><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td data-label='ID' class='mono'>" + esc(j.id) + "</td><td data-label='Worker'>" + esc(j.worker) + "</td><td data-label='rc'>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td data-label='out'>" + fmtBytes(j.out_bytes) + "</td><td data-label='Zeit' class='muted'>" + esc(fmtTs(j.ts)) + "</td><td data-label='cmd' class='mono cmdcell'><span class='cmdtext'>" + esc(j.cmd) + "</span></td><td data-label='Aktionen'><span class='btnrow'><button class='cmddet'>vollstaendig</button></span><span class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></span></td></tr>";
+      html += "<tr><td data-label='Status'><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td data-label='ID' class='mono'>" + esc(j.id) + "</td><td data-label='Worker'>" + esc(j.worker) + "</td><td data-label='rc'>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td data-label='out'>" + fmtBytes(j.out_bytes) + "</td><td data-label='Zeit' class='muted'>" + esc(fmtTs(j.ts)) + "</td><td data-label='cmd' class='mono cmdcell'><span class='cmdtext'>" + esc(j.cmd) + "</span></td><td data-label='Aktionen'><span class='btnrow'><button class='cmddet'>vollständig</button></span><span class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></span></td></tr>";
     });
     html += "</tbody></table></div>";
     box.insertAdjacentHTML("beforeend", html);
   });
   document.querySelectorAll(".jobbtns").forEach(function(td){
     var jid = td.dataset.id, st = td.dataset.status;
-    if (st === "queued"){ td.innerHTML = "<button class='pau'>anhalten</button> <button class='del danger'>loeschen</button>"; }
-    else if (st === "paused"){ td.innerHTML = "<button class='res'>fortsetzen</button> <button class='del danger'>loeschen</button>"; }
-    else { td.innerHTML = "<button class='del danger'>loeschen</button>"; }
+    if (st === "queued"){ td.innerHTML = "<button class='pau'>anhalten</button> <button class='del danger'>löschen</button>"; }
+    else if (st === "paused"){ td.innerHTML = "<button class='res'>fortsetzen</button> <button class='del danger'>löschen</button>"; }
+    else { td.innerHTML = "<button class='del danger'>löschen</button>"; }
     var b;
     if ((b = td.querySelector(".pau"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }); }
     if ((b = td.querySelector(".res"))){ b.addEventListener("click", function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }); }
-    if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await showConfirm("Job loeschen", "Job " + jid + " loeschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
+    if ((b = td.querySelector(".del"))){ b.addEventListener("click", async function(){ var ok = await showConfirm("Job löschen", "Job " + jid + " löschen?"); if (ok){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }); }
   });
   document.querySelectorAll(".cmddet").forEach(function(b){
     b.addEventListener("click", function(){
@@ -594,6 +602,7 @@ async function refreshSettings(){
   document.getElementById("set-budget").value = d.budget_roh;
   document.getElementById("set-budget-hinweis").textContent =
     "aktuell: " + fmtBytes(d.budget) + " belegt: " + fmtBytes(d.data_bytes) +
+    " - Maximum: " + (d.budget_max === null ? "keine Container-Grenze erkannt" : fmtBytes(d.budget_max) + " (Container-Grenze " + fmtBytes(d.mem_limit) + " minus " + fmtBytes(d.budget_headroom) + " Headroom)") +
     " - Quelle: " + d.budget_quelle + (d.budget_quelle === "env" ? " (AGENT_SANDBOX_RELAY_BUDGET im Stack)" : "");
   document.getElementById("set-exec").value = d.exec_jobs_shown;
   document.getElementById("set-exec-hinweis").textContent = "Quelle: " + d.exec_quelle;
@@ -604,7 +613,7 @@ async function refreshSettings(){
 }
 async function saveBudget(){
   var raw = document.getElementById("set-budget").value.trim();
-  var ok = await showConfirm("Budget aendern", "Neues Speicherbudget '" + raw + "' setzen? Gilt sofort und ueberlebt Neustarts.");
+  var ok = await showConfirm("Budget ändern", "Neues Speicherbudget '" + raw + "' setzen? Gilt sofort und überlebt Neustarts.");
   if (!ok){ return; }
   await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({budget: raw}) });
   toast("Budget gesetzt");
@@ -613,7 +622,7 @@ async function saveBudget(){
 }
 async function saveExec(){
   var n = parseInt(document.getElementById("set-exec").value, 10);
-  var ok = await showConfirm("Anzeige aendern", "Erledigte Jobs je Submitter auf " + n + " setzen?");
+  var ok = await showConfirm("Anzeige ändern", "Erledigte Jobs je Submitter auf " + n + " setzen?");
   if (!ok){ return; }
   await api("/admin/api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({exec_jobs_shown: n}) });
   toast("Anzeige-Limit gesetzt");
@@ -669,13 +678,13 @@ document.getElementById("dlg-token-close").addEventListener("click", function(){
 document.getElementById("dlg-token-copy").addEventListener("click", function(){
   var t = document.getElementById("dlg-token-text").textContent;
   if (navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(t.split("\n").pop()).then(function(){ toast("kopiert"); }, function(){ toast("Kopieren nicht moeglich - manuell markieren"); });
-  } else { toast("Kopieren nicht moeglich - manuell markieren"); }
+    navigator.clipboard.writeText(t.split("\n").pop()).then(function(){ toast("kopiert"); }, function(){ toast("Kopieren nicht möglich - manuell markieren"); });
+  } else { toast("Kopieren nicht möglich - manuell markieren"); }
 });
 document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
 window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });
 
-if (PW){ doLogin(); } else { showLogin(""); }
+if (PW){ tryLogin(USER, PW, true); } else { showLogin(""); }
 </script>
 </body>
 </html>

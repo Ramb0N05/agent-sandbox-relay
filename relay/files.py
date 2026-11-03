@@ -18,7 +18,7 @@ async def upload_file(request: Request, authorization: str | None = Header(None)
         declared = int(request.headers.get("content-length", ""))
     except ValueError:
         declared = -1
-    if declared > config.FILEMAX:  # frueh ablehnen, bevor der Body gelesen wird
+    if declared > config.FILEMAX:  # früh ablehnen, bevor der Body gelesen wird
         raise HTTPException(status_code=413)
     raw = await request.body()  # Roh-Body ohne Validierung (FastAPI-Request-Objekt)
     if len(raw) > config.FILEMAX:
@@ -33,7 +33,7 @@ async def upload_file(request: Request, authorization: str | None = Header(None)
     fid = "f" + uuid.uuid4().hex[:12]
     store.files[fid] = {"id": fid, "enc": enc, "size": len(raw), "size_enc": len(enc), "ts": time.time()}
     if len(store.files) > config.FILESTOREMAX:
-        _, old = store.files.popitem(last=False)  # Begrenzung: aelteste Dateien zuerst raus
+        _, old = store.files.popitem(last=False)  # Begrenzung: älteste Dateien zuerst raus
         store.data_bytes -= len(old["enc"])
         store.audit("evict", ursache="datei_store_voll", entfernt=[{"kind": "file", "id": old["id"]}])
     store.audit("file_up", fid=fid, size=len(raw), rolle=role, name=rec["name"])
@@ -45,6 +45,6 @@ async def get_file(fid: str, request: Request, authorization: str | None = Heade
     rec, role = auth.auth_any(request, authorization)
     if fid not in store.files:
         raise HTTPException(status_code=404)
-    raw = store.decode_file(store.files[fid])  # Rueckverwandlung
+    raw = store.decode_file(store.files[fid])  # Rückverwandlung
     store.audit("file_down", fid=fid, size=len(raw), rolle=role, name=rec["name"])
     return Response(content=raw, media_type="application/octet-stream")

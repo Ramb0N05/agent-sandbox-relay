@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class Job(BaseModel):
-    cmd: str = Field(max_length=10000)  # Laengenlimit; Verstoss -> 422
+    cmd: str = Field(max_length=10000)  # Längenlimit; Verstoss -> 422
 
 
 @router.post("/jobs")
@@ -26,7 +26,7 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
                        "ts": time.time(), "worker_id": w["id"], "worker": w["name"],
                        "submitter_id": sub["id"], "submitter": sub["name"]}
     if len(store.jobs) > config.JOBSTOREMAX:
-        _, old = store.jobs.popitem(last=False)  # Begrenzung: aelteste Jobs zuerst raus
+        _, old = store.jobs.popitem(last=False)  # Begrenzung: älteste Jobs zuerst raus
         if old.get("output") is not None:
             store.data_bytes -= len(old["output"])
         store.job_done.pop(old["id"], None)
@@ -37,7 +37,7 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
 
 
 def _take_queued(worker_id):
-    # nur status=="queued": angehaltene Jobs (paused) ueberspringt der Worker
+    # nur status=="queued": angehaltene Jobs (paused) überspringt der Worker
     for j in store.jobs.values():
         if j["status"] == "queued" and j["worker_id"] == worker_id:
             j["status"] = "running"
@@ -49,7 +49,7 @@ def _take_queued(worker_id):
 async def next_job(request: Request, authorization: str | None = Header(None)):
     w = auth.auth_bearer(request, authorization, "worker")
     ev = store.evs.setdefault(w["id"], asyncio.Event())
-    ev.clear()  # erst zuruecksetzen, dann ziehen: kein verlorenes Aufwecken
+    ev.clear()  # erst zurücksetzen, dann ziehen: kein verlorenes Aufwecken
     j = _take_queued(w["id"])
     if j:
         store.audit("deliver", jid=j["id"], worker=w["name"])
@@ -81,8 +81,8 @@ async def post_result(jid: str, body: dict, request: Request, authorization: str
             out = out[:config.OUTMAX]  # Output-Deckel auch serverseitig
         store._evict_for(len(out))
         budget = config.budget()
-        if store.data_bytes + len(out) > budget:  # Einzelresult groesser als Restbudget: kuerzen statt OOM
-            marker = "\n[agent-sandbox-relay: Output gekuerzt, Speicherbudget erreicht]"
+        if store.data_bytes + len(out) > budget:  # Einzelresult größer als Restbudget: kürzen statt OOM
+            marker = "\n[agent-sandbox-relay: Output gekürzt, Speicherbudget erreicht]"
             allowed = max(0, budget - store.data_bytes - len(marker))
             out = out[:allowed] + marker
             store.audit("trim", jid=jid, bytes_gekuerzt=len(out))
@@ -111,13 +111,13 @@ async def get_job(jid: str, request: Request, authorization: str | None = Header
 
 @router.get("/jobs/{jid}/wait")
 async def wait_job(jid: str, request: Request, timeout: int = 25, authorization: str | None = Header(None)):
-    # Status-Long-Poll: wartet bis das Result vorliegt oder der Timeout ablaeuft - ersetzt das Pollen des Absenders
+    # Status-Long-Poll: wartet bis das Result vorliegt oder der Timeout abläuft - ersetzt das Pollen des Absenders
     _own_job(request, jid, authorization)
     timeout = max(1, min(int(timeout), 300))
     deadline = time.monotonic() + timeout
     ev = store.job_done.setdefault(jid, asyncio.Event())
     while True:
-        ev.clear()  # erst zuruecksetzen, dann Zustand pruefen: kein verlorenes Aufwecken
+        ev.clear()  # erst zurücksetzen, dann Zustand prüfen: kein verlorenes Aufwecken
         j = store.jobs.get(jid)
         if j is None:
             raise HTTPException(status_code=404)
@@ -136,14 +136,14 @@ async def wait_job(jid: str, request: Request, timeout: int = 25, authorization:
 
 
 def usage_data():
-    # Struktur fuer GET /usage und die API-Doku-Seite der Verwaltung (GET /admin/api/usage, HTTP-Basic-Session)
+    # Struktur für GET /usage und die API-Doku-Seite der Verwaltung (GET /admin/api/usage, HTTP-Basic-Session)
     return {
         "service": "agent-sandbox-relay",
         "auth": "Authorization: Bearer <token>; Rollen: Submitter (Jobs einspeisen/abfragen) und Worker (Jobs ziehen/Resultate liefern); alle Endpunkte ausser GET /healthz",
         "rollen": {
             "submit": "Submit-Token: POST /jobs, GET /jobs/<id>, GET /jobs/<id>/wait, Datei-Endpunkte",
             "worker": "Worker-Token: GET /jobs/next, POST /jobs/<id>/result, Datei-Endpunkte",
-            "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/loeschen, Jobs anhalten/fortsetzen/loeschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD",
+            "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/löschen, Jobs anhalten/fortsetzen/löschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD",
         },
         "grenzen": {"cmd_zeichen": 10000, "result_output_bytes": config.OUTMAX,
                     "datei_bytes_roh": config.FILEMAX, "job_store": config.JOBSTOREMAX,
@@ -156,33 +156,33 @@ def usage_data():
             "GET /jobs/next": {"antwort": "{'id': '...', 'cmd': '...'} oder 204 (Long-Poll, nur Jobs des eigenen Workers; angehaltene Jobs werden nicht ausgeliefert)", "aufrufer": "Worker-Token"},
             "POST /jobs/<id>/result": {"body": {"output": "...", "rc": 0}, "aufrufer": "Worker-Token (nur eigene Jobs)"},
             "GET /jobs/<id>": {"antwort": "Status/Output", "aufrufer": "Submit-Token (nur eigene Jobs)"},
-            "GET /jobs/<id>/wait": {"query": "timeout=Sekunden (Default 25, max 300)", "antwort": "Job-Zustand, wartet bis done oder Timeout (kein Pollen noetig)", "aufrufer": "Submit-Token (nur eigene Jobs)"},
+            "GET /jobs/<id>/wait": {"query": "timeout=Sekunden (Default 25, max 300)", "antwort": "Job-Zustand, wartet bis done oder Timeout (kein Pollen nötig)", "aufrufer": "Submit-Token (nur eigene Jobs)"},
             "POST /files": {"body": "Rohbytes der Datei; Server speichert gzip+base64-kodiert", "antwort": {"id": "...", "size": 0, "size_enc": 0}, "aufrufer": "beide Rollen"},
             "GET /files/<id>": {"antwort": "Rohbytes (application/octet-stream)", "aufrufer": "beide Rollen"},
             "GET /usage": {"antwort": "diese Dokumentation", "aufrufer": "beide Rollen"},
             "GET /healthz": {"antwort": {"ok": True}, "aufrufer": "Healthcheck, ohne Token"},
-            "GET /admin": {"antwort": "Verwaltungsoberflaeche (Login)", "aufrufer": "Verwaltung"},
+            "GET /admin": {"antwort": "Verwaltungsoberfläche (Login)", "aufrufer": "Verwaltung"},
         },
         "verwaltung_api": {
             "GET /admin/api/tokens": "Worker und Submitter mit Namen",
             "POST /admin/api/tokens": "Token anlegen; name optional (leer -> automatisch benannt), submitter braucht worker_id",
             "PATCH /admin/api/tokens/<id>": "Umbenennen {name: 1-64 Zeichen}",
-            "POST /admin/api/tokens/<id>/assign": "Submitter an anderen Worker haengen {worker_id}",
-            "DELETE /admin/api/tokens/<id>": "Token loeschen (409, solange Abhaengigkeiten offen)",
-            "GET /admin/api/jobs": "je Submitter offene Jobs und die zuletzt erledigten (Default 64, AGENT_SANDBOX_EXECJOBSSHOWN), cmd nur gekuerzt",
-            "GET /admin/api/jobs/<id>": "Job-Detail mit vollem cmd (Dialog der Jobsseite), Output bis 16 KiB gekuerzt",
+            "POST /admin/api/tokens/<id>/assign": "Submitter an anderen Worker hängen {worker_id}",
+            "DELETE /admin/api/tokens/<id>": "Token löschen (409, solange Abhängigkeiten offen)",
+            "GET /admin/api/jobs": "je Submitter offene Jobs und die zuletzt erledigten (Default 64, AGENT_SANDBOX_EXECJOBSSHOWN), cmd nur gekürzt",
+            "GET /admin/api/jobs/<id>": "Job-Detail mit vollem cmd (Dialog der Jobsseite), Output bis 16 KiB gekürzt",
             "POST /admin/api/jobs/<id>/pause": "wartender Job -> angehalten (Worker zieht ihn nicht)",
-            "POST /admin/api/jobs/<id>/resume": "angehaltener Job -> zurueck in die Queue, Worker wird geweckt",
-            "DELETE /admin/api/jobs/<id>": "Job loeschen (jeder Status; Budget wird bei erledigten Jobs zurueckgegeben)",
+            "POST /admin/api/jobs/<id>/resume": "angehaltener Job -> zurück in die Queue, Worker wird geweckt",
+            "DELETE /admin/api/jobs/<id>": "Job löschen (jeder Status; Budget wird bei erledigten Jobs zurückgegeben)",
             "GET /admin/api/audit": "Protokoll (neueste zuerst)",
-            "GET /admin/api/state": "Budget/Jobs/Dateien/Zaehler",
-            "GET /admin/api/settings": "zentrale Einstellungen: Budget und Anzeige-Limit aenderbar, weitere Grenzen nur per Stack-Umgebung",
-            "POST /admin/api/settings": "Einstellungen aendern {budget: Env-Syntax, exec_jobs_shown: 1-500}; wirksam sofort und in settings.json dauerhaft",
+            "GET /admin/api/state": "Budget/Jobs/Dateien/Zähler",
+            "GET /admin/api/settings": "zentrale Einstellungen: Budget und Anzeige-Limit änderbar, weitere Grenzen nur per Stack-Umgebung",
+            "POST /admin/api/settings": "Einstellungen ändern {budget: Env-Syntax, exec_jobs_shown: 1-500}; wirksam sofort und in settings.json dauerhaft",
             "GET /admin/api/usage": "diese Dokumentation mit der Admin-Session (HTTP Basic) statt Bearer-Token",
         },
         "dateitransfer": {
             "datei_in_die_vm": "1) POST /files mit Rohbytes -> id; 2) Job cmd 'VIBE_FETCH <id> <zielpfad>'",
-            "datei_aus_der_vm": "Job cmd 'VIBE_SEND <pfad>' -> Result enthaelt 'VIBE_SEND id=<id>'; dann GET /files/<id>",
+            "datei_aus_der_vm": "Job cmd 'VIBE_SEND <pfad>' -> Result enthält 'VIBE_SEND id=<id>'; dann GET /files/<id>",
             "fallback": "Job cmd 'base64 -w0 <datei>' (Base64-Text im Result, ohne Datei-Endpunkte)",
         },
         "beispiele": [

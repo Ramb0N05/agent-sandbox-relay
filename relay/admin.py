@@ -22,7 +22,7 @@ _TEMPLATE = os.path.join(os.path.dirname(__file__), "templates", "admin.html")
 class TokenCreate(BaseModel):
     role: str = Field(pattern="^(worker|submitter)$")
     name: str | None = Field(default=None, max_length=64)  # optional: leer/None -> automatisch benannt
-    worker_id: str | None = None  # Pflicht fuer Submitter: jeder Submitter haengt an genau einem Worker
+    worker_id: str | None = None  # Pflicht für Submitter: jeder Submitter hängt an genau einem Worker
 
 
 class TokenRename(BaseModel):
@@ -67,12 +67,15 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
 
 @router.get("/admin/api/settings")
 async def admin_settings(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # Einstellungsseite: aenderbare Werte (Budget, Anzeige-Limit) plus Start-umweltfixe Grenzen
+    # Einstellungsseite: änderbare Werte (Budget, Anzeige-Limit) plus Start-umweltfixe Grenzen
     await auth.require_admin(request, credentials)
     budget_raw = os.environ.get("AGENT_SANDBOX_RELAY_BUDGET", config.DEFAULT_BUDGET)
     exec_raw = os.environ.get("AGENT_SANDBOX_EXECJOBSSHOWN", "64")
     return {
         "budget": config.budget(),
+        "budget_max": config.budget_max(),
+        "budget_headroom": config.BUDGET_HEADROOM,
+        "mem_limit": config.mem_limit(),
         "budget_roh": store.settings_raw("budget") if config.get_override("budget") is not None else budget_raw,
         "budget_quelle": "datei" if config.get_override("budget") is not None else ("env" if "AGENT_SANDBOX_RELAY_BUDGET" in os.environ else "default"),
         "data_bytes": store.data_bytes,
@@ -88,7 +91,7 @@ async def admin_settings(request: Request, credentials: HTTPBasicCredentials | N
             "long_poll_s": 300,
             "admin_nutzername": config.ADMIN_USERNAME,
         },
-        "hinweis_env": "cmd_zeichen, Result-Output, Datei-Deckel, Store-Grenzen, Long-Poll und Nutzername stehen nur als Stack-Umgebung (Compose/Portainer) zur Verfuegung; Aenderungen brauchen einen Neustart des Services.",
+        "hinweis_env": "cmd_zeichen, Result-Output, Datei-Deckel, Store-Grenzen, Long-Poll und Nutzername stehen nur als Stack-Umgebung (Compose/Portainer) zur Verfügung; Änderungen brauchen einen Neustart des Services.",
     }
 
 
@@ -101,11 +104,14 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
         try:
             v = config.parse_size(raw)
         except ValueError:
-            raise HTTPException(status_code=422, detail="Budget ungueltig. Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)")
+            raise HTTPException(status_code=422, detail="Budget ungültig. Syntax wie AGENT_SANDBOX_RELAY_BUDGET: b, k|kb, m|mb, g|gb case-insensitiv, ohne Einheit Bytes (Beispiel: 384m)")
         if v < config.OUTMAX:
             raise HTTPException(status_code=422, detail="Budget unter dem Output-Deckel (%d Bytes) macht die Queue unbrauchbar" % config.OUTMAX)
+        bmax = config.budget_max()
+        if bmax is not None and v > bmax:
+            raise HTTPException(status_code=422, detail="Budget (%d Bytes) über dem Maximum (%d Bytes): Container-Speichergrenze (%s) minus 64 MiB Headroom - knappere Werte verhindern den Kernel-OOM-Kill des Containers (Exit 137)" % (v, bmax, "unbegrenzt" if config.mem_limit() is None else "%d Bytes" % config.mem_limit()))
         if v < store.data_bytes:
-            raise HTTPException(status_code=409, detail="Budget (%d Bytes) liegt unter dem aktuell belegten Speicher (%d Bytes) - erst Jobs oder Dateien loeschen" % (v, store.data_bytes))
+            raise HTTPException(status_code=409, detail="Budget (%d Bytes) liegt unter dem aktuell belegten Speicher (%d Bytes) - erst Jobs oder Dateien löschen" % (v, store.data_bytes))
         changed["budget"] = raw
     if body.exec_jobs_shown is not None:
         n = int(body.exec_jobs_shown)
@@ -128,7 +134,7 @@ async def admin_settings_update(body: SettingsUpdate, request: Request, credenti
 
 @router.get("/admin/api/usage")
 async def admin_usage(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # API-Doku fuer die Verwaltungsoberflaeche: dieselbe Struktur wie GET /usage, aber mit der HTTP-Basic-Session statt eines Bearer-Tokens
+    # API-Doku für die Verwaltungsoberfläche: dieselbe Struktur wie GET /usage, aber mit der HTTP-Basic-Session statt eines Bearer-Tokens
     await auth.require_admin(request, credentials)
     return jobs.usage_data()
 
@@ -161,7 +167,7 @@ async def admin_create(body: TokenCreate, request: Request, credentials: HTTPBas
         return {"id": rec["id"], "role": "worker", "name": name, "token": tok}
     w = next((w for w in store.workers if w["id"] == body.worker_id), None)
     if not body.worker_id or w is None:
-        raise HTTPException(status_code=400, detail="Submitter braucht eine gueltige worker_id")
+        raise HTTPException(status_code=400, detail="Submitter braucht eine gültige worker_id")
     name = name or _auto_name("submitter")
     tok = "s-" + plain
     rec = {"id": "s-" + uuid.uuid4().hex[:10], "name": name, "hash": hashlib.sha256(tok.encode()).hexdigest(),
@@ -234,19 +240,19 @@ async def admin_delete(tid: str, request: Request, credentials: HTTPBasicCredent
 
 def _job_view(j):
     cmd = j.get("cmd") or ""
-    if len(cmd) > 80:  # im Listing nie den vollen cmd (Ausfuehrungspläne gehoeren nicht in die Uebersicht)
+    if len(cmd) > 80:  # im Listing nie den vollen cmd (Ausfuehrungspläne gehören nicht in die Übersicht)
         cmd = cmd[:80] + "..."
     return {"id": j["id"], "status": j["status"], "worker": j.get("worker"), "submitter": j.get("submitter"),
             "rc": j.get("rc"), "out_bytes": len(j["output"]) if isinstance(j.get("output"), str) else 0,
             "ts": j["ts"], "cmd": cmd}
 
 
-DETAIL_OUTMAX = 16384  # Output im Job-Dialog gekuerzt (volles Result bliebe bis 8 MiB in der UI)
+DETAIL_OUTMAX = 16384  # Output im Job-Dialog gekürzt (volles Result bliebe bis 8 MiB in der UI)
 
 
 @router.get("/admin/api/jobs/{jid}")
 async def admin_job_detail(jid: str, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
-    # vollstaendiger cmd fuer den Dialog der Jobsseite (das Listing kuerzt bei 80 Zeichen)
+    # vollständiger cmd für den Dialog der Jobsseite (das Listing kürzt bei 80 Zeichen)
     await auth.require_admin(request, credentials)
     j = store.jobs.get(jid)
     if j is None:
@@ -254,7 +260,7 @@ async def admin_job_detail(jid: str, request: Request, credentials: HTTPBasicCre
     out = j.get("output")
     out_len = len(out) if isinstance(out, str) else 0
     if isinstance(out, str) and out_len > DETAIL_OUTMAX:
-        out = out[:DETAIL_OUTMAX] + "\n[agent-sandbox-relay: Output gekuerzt, voll %d Bytes]" % out_len
+        out = out[:DETAIL_OUTMAX] + "\n[agent-sandbox-relay: Output gekürzt, voll %d Bytes]" % out_len
     return {"id": j["id"], "status": j["status"], "worker": j.get("worker"), "submitter": j.get("submitter"),
             "rc": j.get("rc"), "out_bytes": out_len, "ts": j["ts"], "cmd": j.get("cmd") or "",
             "output": out if isinstance(out, str) else None, "output_gekuerzt": out_len > DETAIL_OUTMAX}
@@ -270,7 +276,7 @@ async def admin_jobs(request: Request, credentials: HTTPBasicCredentials | None 
     done_by: dict = {s["id"]: [] for s in store.submitters}
     for j in store.jobs.values():
         sid = j["submitter_id"]
-        if sid not in subs:  # Jobs eines geloeschten Submitters nicht verstecken
+        if sid not in subs:  # Jobs eines gelöschten Submitters nicht verstecken
             if sid not in open_by:
                 open_by[sid] = []
                 done_by[sid] = []
@@ -282,7 +288,7 @@ async def admin_jobs(request: Request, credentials: HTTPBasicCredentials | None 
     out = []
     for g in groups:
         done = sorted(done_by[g["id"]], key=lambda v: v["ts"], reverse=True)[:shown]  # neueste zuerst
-        offen = sorted(open_by[g["id"]], key=lambda v: v["ts"])  # aelteste zuerst
+        offen = sorted(open_by[g["id"]], key=lambda v: v["ts"])  # älteste zuerst
         out.append({"id": g["id"], "name": g["name"], "offen": offen, "erledigt": done})
     return {"submitters": out}
 
@@ -320,7 +326,7 @@ async def admin_delete_job(jid: str, request: Request, credentials: HTTPBasicCre
     j = store.jobs.pop(jid, None)
     if j is None:
         raise HTTPException(status_code=404, detail="Job nicht gefunden")
-    if isinstance(j.get("output"), str):  # belegtes Budget zurueckgeben
+    if isinstance(j.get("output"), str):  # belegtes Budget zurückgeben
         store.data_bytes -= len(j["output"])
     store.job_done.pop(jid, None)
     store.audit("job_delete", jid=jid, status=j["status"], submitter=j.get("submitter"))

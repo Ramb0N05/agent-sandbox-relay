@@ -11,6 +11,14 @@ die Ausfuehrung passiert ausschliesslich in der VM. Dateien nimmt er als
 Rohbytes entgegen, speichert sie gzip-komprimiert und base64-kodiert und
 liefert sie beim Auslesen als Rohbytes zurueck.
 
+Modularisierung (elfte Runde 11/2026): agent_sandbox_relay.py ist nur noch
+der Entry (FastAPI-App, Router-Assembly, /healthz). Die Logik liegt im
+Paket relay/: config.py (Env, Budget-Syntax), store.py (Zustand,
+Persistenz, Audit, OOM-Eviction), auth.py (Rollen-Tokens, Admin-Login mit
+Lockout), jobs.py (Job-Endpunkte inkl. /usage), files.py (Datei-Endpunkte),
+admin.py (Verwaltung) mit relay/templates/admin.html (Admin-UI als
+HTML-Template, CSP mit frischem Nonce je Aufruf).
+
 Branches: main = Server-Seite (dieser Service), worker = VM-Seite
 (cloud-init, Pull-Agent, systemd-Units, virt-install, Ziel-XML; enthaelt
 keine Dateien aus main). Aenderungen an der API immer in BEIDEN Branches
@@ -24,8 +32,12 @@ Drei Rollen mit getrennten Tokens (Erzeugung ueber die Verwaltung):
   POST /jobs/<id>/result, Datei-Endpunkte, GET /usage.
 - Submit-Token (Praefix s-): Absender. POST /jobs, GET /jobs/<id>,
   GET /jobs/<id>/wait, Datei-Endpunkte, GET /usage.
-- Admin (HTTP Basic, Nutzername admin): Verwaltungsoberflaeche GET /admin
-  (Tokens erstellen/zuordnen/loeschen, Speicher- und Audit-Anzeige).
+- Admin (HTTP Basic, Nutzername admin bzw. AGENT_SANDBOX_ADMIN_USERNAME):
+  Verwaltungsoberflaeche GET /admin (Tokens erstellen/benennen/zuordnen/
+  loeschen, Job-Verwaltung je Submitter, Speicher- und Audit-Anzeige).
+  Worker und Submitter sind optional benennbar: Name bei der Erstellung
+  optional (leer -> automatisch benannt), nachtraegliches Umbenennen per
+  PATCH /admin/api/tokens/<id>.
 
 Jeder Submitter ist genau einem Worker zugeordnet: seine Jobs landen nur
 in der Queue dieses Workers, und nur dieser Worker kann sie ziehen und
@@ -65,10 +77,18 @@ redoc_url=None, openapi_url=None): /docs, /redoc und /openapi.json
 antworten 404. Die API-Doku liefert GET /usage (token-geschuetzt).
 
 Verwaltung-API (alles hinter Admin-Login): GET /admin/api/tokens,
-POST /admin/api/tokens {"role": "worker"|"submitter", "name": "...",
-"worker_id": "<worker-id, Pflicht bei submitter>"},
-POST /admin/api/tokens/<id>/assign {"worker_id": "..."} (nur Submitter),
-DELETE /admin/api/tokens/<id>, GET /admin/api/audit?limit=50,
+POST /admin/api/tokens {"role": "worker"|"submitter", "name": "..."
+(optional, leer -> automatisch benannt), "worker_id": "<worker-id,
+Pflicht bei submitter>"}, PATCH /admin/api/tokens/<id> {"name": "..."}
+(Umbenennen), POST /admin/api/tokens/<id>/assign {"worker_id": "..."}
+(nur Submitter), DELETE /admin/api/tokens/<id>,
+GET /admin/api/jobs (Jobs je Submitter: offene queued/paused/running und
+die zuletzt erledigten, Default 64, je Job mit abarbeitendem Worker,
+cmd nur gekuerzt), POST /admin/api/jobs/<id>/pause (wartend -> angehalten;
+angehaltene Jobs zieht der Worker nicht), POST /admin/api/jobs/<id>/resume
+(angehalten -> zurueck in die Queue, Worker wird geweckt),
+DELETE /admin/api/jobs/<id> (jeder Status; belegtes Budget wird bei
+erledigten Jobs zurueckgegeben), GET /admin/api/audit?limit=50,
 GET /admin/api/state (Budget/Jobs/Dateien/Zaehler).
 
 ## Environment
@@ -76,14 +96,22 @@ GET /admin/api/state (Budget/Jobs/Dateien/Zaehler).
 - AGENT_SANDBOX_RELAY_TOKEN: Legacy-Token. Pflicht, solange der
   Token-Speicher leer ist (Migration, siehe oben); ohne Token und ohne
   Speicher startet der Prozess nicht (fail-closed, SystemExit).
-- AGENT_SANDBOX_ADMIN_PASSWORD: Passwort der Verwaltung (Nutzername
-  admin). Ungesetzt: Bootstrap-Modus, das Legacy-Token gilt als
-  Admin-Passwort. Beide ungesetzt: Verwaltung antwortet 503.
+- AGENT_SANDBOX_ADMIN_PASSWORD: Passwort der Verwaltung. Ungesetzt:
+  Bootstrap-Modus, das Legacy-Token gilt als Admin-Passwort. Beide
+  ungesetzt: Verwaltung antwortet 503.
+- AGENT_SANDBOX_ADMIN_USERNAME: Nutzername der Verwaltung (Default admin,
+  elfte Runde).
+- AGENT_SANDBOX_EXECJOBSHOWN: je Submitter angezeigte erledigte Jobs in
+  der Verwaltung (Default 64).
 - AGENT_SANDBOX_RELAY_DATA: Verzeichnis fuer tokens.json und
   audit.jsonl (Default /tmp/agent-sandbox-relay). OHNE persistentes
   Volume geht der Token-Speicher bei jedem Neubau des Containers
   verloren (tmpfs) - die Legacy-Migration faengt das auf, echte Tokens
-  sind dann aber weg. Empfehlung fuer den Stack:
+  sind dann aber weg. Beim Start prueft der Service die Schreibbarkeit
+  mit einer Probe: Ist das Verzeichnis nicht schreibbar (typischer Fall:
+  Volume gehoert root, Container laeuft als USER 65534), endet der Start
+  mit einer klaren Meldung inklusive Fix (Volume loeschen oder einmalig
+  chown 65534:65534), nicht mit einem Traceback. Empfehlung fuer den Stack:
 
       agent-sandbox-relay:
         build: https://github.com/Ramb0N05/agent-sandbox-relay.git
@@ -100,7 +128,10 @@ GET /admin/api/state (Budget/Jobs/Dateien/Zaehler).
         agent-sandbox-relay-data:
 
 - AGENT_SANDBOX_RELAY_BUDGET: Speicherbudget fuer Output- plus
-  Datei-Encoding-Bytes (Default 256 MiB). OOM-Schutz: Bei Druck raeumt
+  Datei-Encoding-Bytes (Default 256m). Syntax wie mem_limit im
+  Compose-File (elfte Runde): Einheiten b, k|kb, m|mb, g|gb
+  case-insensitiv, ohne Einheit Bytes; Beispiel 384m. Ungueltige Angabe
+  beendet den Start mit klarer Meldung. OOM-Schutz: Bei Druck raeumt
   der Server zuerst erledigte Jobs (aelteste zuerst), dann aelteste
   Dateien; ein Einzelresult, das nicht mehr ins Restbudget passt, wird
   mit Kennzeichnung gekuerzt statt den Container zu killen; Uploads
@@ -134,8 +165,23 @@ z. B. GET /healthz und /docs -> 404).
   Timing-Seitenkanaele); nicht-ASCII-Header werden vorher mit 401
   abgelehnt, weil compare_digest nur ASCII-Strings akzeptiert. Neue
   Tokens: secrets.token_urlsafe(32) (256 Bit Entropie).
-- Admin-Login: HTTP Basic (Nutzername admin), compare_digest, 0,5 s
-  Verzoegerung je Fehlversuch; das Passwort liegt nur als Env im Stack.
+- Admin-Login: HTTP Basic (Nutzername admin bzw.
+  AGENT_SANDBOX_ADMIN_USERNAME), compare_digest auf Nutzername und
+  Passwort, 0,5 s Verzoegerung je Fehlversuch; Lockout je Client-IP
+  (hinter Traefik: letzter X-Forwarded-For-Eintrag): nach 5
+  Fehlversuchen 300 s Sperre, je weiterem Fehlversuch verdoppelt bis
+  3600 s (Antwort 429 mit Retry-After); erfolgreicher Login setzt
+  Zaehler und Sperre zurueck. Digest wurde bewusst nicht umgesetzt: unter
+  TLS schuetzt Basic genauso (OWASP: Basic Authentication must be
+  conducted over TLS), Digest-Hashes sind je nach Browser MD5 (nicht
+  empfohlen, SHA-256 verstehen erst neuere Firefox), und der
+  Sicherheitsgewinn gegenueber Basic unter TLS ist null. Das Passwort
+  liegt nur als Env im Stack.
+- Admin-UI: HTML-Template relay/templates/admin.html, ausgeliefert mit
+  Content-Security-Policy (default-src 'none', script-src mit frischem
+  Nonce je Aufruf, style-src 'unsafe-inline', connect-src 'self',
+  base-uri/frame-ancestors 'none'), Cache-Control no-store,
+  X-Content-Type-Options nosniff, Referrer-Policy no-referrer.
 - Pydantic erzwingt cmd als String mit max_length=10000 (Verstoss -> 422)
   und die Token-Felder (Rolle nur worker|submitter, Name 1-64 Zeichen).
 - Verwaiste Long-Polls nehmen keine Jobs mehr an: GET /jobs/next prueft
@@ -157,7 +203,11 @@ z. B. GET /healthz und /docs -> 404).
   file_down. Audit-Fehler brechen den Betrieb nie.
 - Container: USER 65534:65534, read_only, tmpfs /tmp, cap_drop ALL,
   no-new-privileges, mem_limit/cpus (Details im Canvas; mem_limit 512m -
-  deshalb Budget deutlich darunter).
+  deshalb Budget deutlich darunter, z. B. 384m). Das Dockerfile legt /data
+  mit chown 65534:65534 an: bei einer frischen (leeren) Volume-Kopie
+  uebernimmt Docker Inhalt und Besitzrechte aus dem Image; ein Volume, das
+  vor diesem Image-Stand angelegt wurde, behaelt root und muss einmalig
+  geloescht oder gechownt werden (sonst Schreib-Probe-Fehler beim Start).
 
 ## Empfehlung Rate-Limit (Traefik, nicht Teil dieses Services)
 

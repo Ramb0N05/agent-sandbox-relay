@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-sandbox-relay Verwaltung</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}
+table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem}
+th,td{border:1px solid #ccc;padding:.35rem .6rem;text-align:left;font-size:.9rem}
+th{background:#f3f3f3}
+#tokbox{background:#f7f7f7;border:1px solid #888;padding:.6rem;margin:.6rem 0;white-space:pre-wrap;word-break:break-all}
+.muted{color:#666;font-size:.85rem}
+input,select,button{padding:.25rem}
+.badge{display:inline-block;padding:0 .35rem;border-radius:4px;font-size:.8rem}
+.queued{background:#eee}.running{background:#ffd}.paused{background:#fda}.done{background:#dfd}
+.cmd{font-family:monospace;font-size:.8rem}
+h3{margin-bottom:.2rem}
+</style>
+</head>
+<body>
+<h1>agent-sandbox-relay Verwaltung</h1>
+<div id="login">
+  <p>Login (Nutzername <code id="uhint">admin</code>):</p>
+  <input id="user" placeholder="Nutzername" value="admin">
+  <input type="password" id="pw" placeholder="Passwort">
+  <button onclick="doLogin()">Login</button>
+  <span id="loginmsg" class="muted"></span>
+</div>
+<div id="app" hidden>
+  <p class="muted" id="mode"></p>
+  <button onclick="refresh()">Aktualisieren</button>
+  <button onclick="logout()">Logout</button>
+  <h2>Workers (VM-Agenten)</h2>
+  <table id="wtab"><thead><tr><th>Name</th><th>ID</th><th>angelegt</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
+  <p>Neu: <input id="wname" placeholder="Name (optional, z.B. vm1)"> <button onclick="addWorker()">Worker anlegen</button></p>
+  <h2>Submitters (Absender, je einem Worker zugeordnet)</h2>
+  <table id="stab"><thead><tr><th>Name</th><th>ID</th><th>Worker</th><th>angelegt</th><th>Umziehen</th><th>Umbenennen</th><th></th></tr></thead><tbody></tbody></table>
+  <p>Neu: <input id="sname" placeholder="Name (optional, z.B. vibe)"> Worker: <select id="sworker"></select> <button onclick="addSubmitter()">Submitter anlegen</button></p>
+  <h2>Jobs je Submitter</h2>
+  <div id="jobs"></div>
+  <h2>Speicher</h2>
+  <p id="state" class="muted"></p>
+  <h2>Protokoll (neueste zuerst)</h2>
+  <table id="atab"><thead><tr><th>Zeit (UTC)</th><th>Ereignis</th><th>Details</th></tr></thead><tbody></tbody></table>
+  <div id="tokbox" hidden></div>
+</div>
+<script nonce="__NONCE__">
+"use strict";
+var USER = sessionStorage.getItem("relayadminuser") || "admin";
+var PW = sessionStorage.getItem("relayadminpw") || "";
+function hdr(extra){ var h = {"Authorization": "Basic " + btoa(USER + ":" + PW)}; if (extra) { for (var k in extra) { h[k] = extra[k]; } } return h; }
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = hdr(opts.headers);
+  var r = await fetch(path, opts);
+  if (r.status === 401){ showLogin("Login fehlgeschlagen"); throw new Error("401"); }
+  if (r.status === 429){ showLogin("Gesperrt: zu viele Fehlversuche (Retry-After " + r.headers.get("Retry-After") + " s)"); throw new Error("429"); }
+  if (r.status === 503){ alert("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)"); throw new Error("503"); }
+  if (!r.ok){ var t = await r.text(); alert("Fehler " + r.status + ": " + t); throw new Error(String(r.status)); }
+  return r.json();
+}
+function showLogin(msg){
+  document.getElementById("app").hidden = true;
+  document.getElementById("login").hidden = false;
+  if (msg){ document.getElementById("loginmsg").textContent = msg; }
+}
+async function doLogin(){
+  USER = document.getElementById("user").value || "admin";
+  PW = document.getElementById("pw").value;
+  try { await refresh(); sessionStorage.setItem("relayadminuser", USER); sessionStorage.setItem("relayadminpw", PW); document.getElementById("login").hidden = true; document.getElementById("app").hidden = false; }
+  catch (e){}
+}
+function logout(){ sessionStorage.removeItem("relayadminuser"); sessionStorage.removeItem("relayadminpw"); location.reload(); }
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
+function showToken(tok, name){
+  var b = document.getElementById("tokbox");
+  b.hidden = false;
+  b.textContent = "Token fuer '" + name + "' (nur diesmal sichtbar, jetzt sichern):\n" + tok;
+}
+async function refresh(){
+  var d = await api("/admin/api/tokens");
+  document.getElementById("mode").textContent = "Admin-Modus: " + d.admin_mode + " | Workers: " + d.workers.length + " | Submitters: " + d.submitters.length;
+  var wt = document.querySelector("#wtab tbody"); wt.innerHTML = "";
+  var sw = document.getElementById("sworker"); sw.innerHTML = "";
+  d.workers.forEach(function(w){
+    wt.insertAdjacentHTML("beforeend", "<tr><td>" + esc(w.name) + (w.legacy ? " (legacy)" : "") + "</td><td>" + esc(w.id) + "</td><td>" + esc(w.created) + "</td><td><button data-id='" + esc(w.id) + "' data-name='" + esc(w.name) + "' class='renw'>umbenennen</button></td><td><button data-id='" + esc(w.id) + "' class='delw'>loeschen</button></td></tr>");
+    sw.insertAdjacentHTML("beforeend", "<option value='" + esc(w.id) + "'>" + esc(w.name) + "</option>");
+  });
+  var st = document.querySelector("#stab tbody"); st.innerHTML = "";
+  d.submitters.forEach(function(s){
+    var opts = d.workers.map(function(w){ return "<option value='" + esc(w.id) + "'" + (w.id === s.worker_id ? " selected" : "") + ">" + esc(w.name) + "</option>"; }).join("");
+    st.insertAdjacentHTML("beforeend", "<tr><td>" + esc(s.name) + (s.legacy ? " (legacy)" : "") + "</td><td>" + esc(s.id) + "</td><td>" + esc(s.worker_name) + "</td><td>" + esc(s.created) + "</td><td><select id='as-" + esc(s.id) + "'>" + opts + "</select> <button data-id='" + esc(s.id) + "' class='ass'>speichern</button></td><td><button data-id='" + esc(s.id) + "' data-name='" + esc(s.name) + "' class='rens'>umbenennen</button></td><td><button data-id='" + esc(s.id) + "' class='dels'>loeschen</button></td></tr>");
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".delw"), function(b){ b.onclick = function(){ del(b.dataset.id, "worker"); }; });
+  Array.prototype.forEach.call(document.querySelectorAll(".dels"), function(b){ b.onclick = function(){ del(b.dataset.id, "submitter"); }; });
+  Array.prototype.forEach.call(document.querySelectorAll(".ass"), function(b){ b.onclick = function(){ assign(b.dataset.id); }; });
+  Array.prototype.forEach.call(document.querySelectorAll(".renw"), function(b){ b.onclick = function(){ rename(b.dataset.id, b.dataset.name); }; });
+  Array.prototype.forEach.call(document.querySelectorAll(".rens"), function(b){ b.onclick = function(){ rename(b.dataset.id, b.dataset.name); }; });
+  await refreshJobs();
+  var stt = await api("/admin/api/state");
+  document.getElementById("state").textContent = "Budget belegt: " + stt.data_bytes + " / " + stt.budget + " Bytes | Jobs: " + stt.jobs + " | Dateien: " + stt.files + " | erledigte Jobs je Submitter angezeigt: " + stt.exec_jobs_je_submitter;
+  var au = await api("/admin/api/audit?limit=50");
+  var at = document.querySelector("#atab tbody"); at.innerHTML = "";
+  au.events.forEach(function(e){
+    var rest = JSON.parse(JSON.stringify(e)); delete rest.ts; delete rest.event;
+    at.insertAdjacentHTML("beforeend", "<tr><td>" + esc(e.ts) + "</td><td>" + esc(e.event) + "</td><td>" + esc(JSON.stringify(rest)) + "</td></tr>");
+  });
+}
+async function refreshJobs(){
+  var d = await api("/admin/api/jobs");
+  var box = document.getElementById("jobs");
+  box.innerHTML = "";
+  d.submitters.forEach(function(s){
+    var html = "<h3>" + esc(s.name) + " <span class='muted'>(" + esc(s.id) + ", offen: " + s.offen.length + ", erledigt angezeigt: " + s.erledigt.length + ")</span></h3>";
+    html += "<table><thead><tr><th>Status</th><th>ID</th><th>Worker</th><th>rc</th><th>out</th><th>Zeit</th><th>cmd (gekuerzt)</th><th></th></tr></thead><tbody>";
+    s.offen.concat(s.erledigt).forEach(function(j){
+      html += "<tr><td><span class='badge " + esc(j.status) + "'>" + esc(j.status) + "</span></td><td>" + esc(j.id) + "</td><td>" + esc(j.worker) + "</td><td>" + (j.rc === null ? "-" : esc(j.rc)) + "</td><td>" + j.out_bytes + "</td><td>" + esc(new Date(j.ts * 1000).toISOString()) + "</td><td class='cmd'>" + esc(j.cmd) + "</td><td class='jobbtns' data-id='" + esc(j.id) + "' data-status='" + esc(j.status) + "'></td></tr>";
+    });
+    html += "</tbody></table>";
+    box.insertAdjacentHTML("beforeend", html);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".jobbtns"), function(td){
+    var jid = td.dataset.id, st = td.dataset.status;
+    if (st === "queued"){ td.innerHTML = "<button class='pau'>anhalten</button> <button class='del'>loeschen</button>"; }
+    else if (st === "paused"){ td.innerHTML = "<button class='res'>fortsetzen</button> <button class='del'>loeschen</button>"; }
+    else if (st === "running"){ td.innerHTML = "<button class='del'>loeschen</button>"; }
+    else { td.innerHTML = "<button class='del'>loeschen</button>"; }
+    var b;
+    if ((b = td.querySelector(".pau"))){ b.onclick = function(){ api("/admin/api/jobs/" + jid + "/pause", {method: "POST"}).then(refreshJobs); }; }
+    if ((b = td.querySelector(".res"))){ b.onclick = function(){ api("/admin/api/jobs/" + jid + "/resume", {method: "POST"}).then(refreshJobs); }; }
+    if ((b = td.querySelector(".del"))){ b.onclick = function(){ if (confirm("Job loeschen?")){ api("/admin/api/jobs/" + jid, {method: "DELETE"}).then(refreshJobs); } }; }
+  });
+}
+async function addWorker(){
+  var n = document.getElementById("wname").value.trim();
+  var d = await api("/admin/api/tokens", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "worker", name: n}) });
+  showToken(d.token, d.name);
+  document.getElementById("wname").value = "";
+  refresh();
+}
+async function addSubmitter(){
+  var n = document.getElementById("sname").value.trim();
+  var w = document.getElementById("sworker").value;
+  if (!w){ return; }
+  var d = await api("/admin/api/tokens", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: "submitter", name: n, worker_id: w}) });
+  showToken(d.token, d.name);
+  document.getElementById("sname").value = "";
+  refresh();
+}
+async function rename(tid, alt){
+  var n = prompt("Neuer Name fuer '" + alt + "':", alt);
+  if (n === null || !n.trim()){ return; }
+  await api("/admin/api/tokens/" + tid, { method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: n.trim()}) });
+  refresh();
+}
+async function assign(tid){
+  var v = document.getElementById("as-" + tid).value;
+  await api("/admin/api/tokens/" + tid + "/assign", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({worker_id: v}) });
+  refresh();
+}
+async function del(tid, role){
+  if (!confirm("Token loeschen? Der Zugang endet sofort.")){ return; }
+  await api("/admin/api/tokens/" + tid, { method: "DELETE" });
+  refresh();
+}
+if (PW){ doLogin(); }
+</script>
+</body>
+</html>

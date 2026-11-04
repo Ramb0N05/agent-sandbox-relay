@@ -1,8 +1,11 @@
-# relay/auth.py - bearer tokens by role, admin login with lockout (11th round; 14th: 401 without basic challenge)
+# relay/auth.py - bearer tokens by role, admin login with lockout (11th round; 14th: 401 without basic challenge; 35th: optional mTLS client certs for /admin)
 import asyncio
+import base64
 import hashlib
+import re
 import secrets
 import time
+import urllib.parse
 
 from fastapi import HTTPException
 
@@ -95,15 +98,70 @@ def _register_fail(peer):
     return fails, until
 
 
+_XFCC_HASH_RE = re.compile(r"(?:^|;)\s*Hash=([0-9a-fA-F:]{16,})\s*(?:;|$)")
+_XFCC_CERT_RE = re.compile(r'(?:^|;)\s*Cert="([^"]*)"')
+
+
+def _b64_cert_hashes(value):
+    # sha256 over DER per cert in a header value: PEM (with/without armor+newlines, possibly
+    # URL-escaped), bare base64 DER, comma-separated chain (Traefik passTLSClientCert pem=true)
+    hashes = []
+    for part in urllib.parse.unquote(value).split(","):
+        part = part.strip().strip('"')
+        for armor in ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"):
+            part = part.replace(armor, "")
+        b64 = "".join(c for c in part if c.isalnum() or c in "+/=")
+        if not b64:
+            continue
+        try:
+            der = base64.b64decode(b64 + "=" * (-len(b64) % 4), validate=True)
+        except Exception:
+            continue
+        hashes.append(hashlib.sha256(der).hexdigest())
+    return hashes
+
+
+def _client_cert_hashes(request):
+    # forwarded by the TLS-terminating proxy only (Traefik clientAuth + passTLSClientCert):
+    # X-Forwarded-Tls-Client-Cert (pem) or Envoy-style X-Forwarded-Client-Cert (Hash= / Cert="...")
+    hashes = []
+    h = request.headers.get("x-forwarded-tls-client-cert")
+    if h:
+        hashes += _b64_cert_hashes(h)
+    h = request.headers.get("x-forwarded-client-cert")
+    if h:
+        for part in h.split(","):
+            m = _XFCC_HASH_RE.search(part)
+            if m:
+                hashes.append(m.group(1).replace(":", "").lower())
+            m = _XFCC_CERT_RE.search(part)
+            if m:
+                hashes += _b64_cert_hashes(m.group(1))
+    return hashes
+
+
 async def require_admin(request, credentials):
-    pw, mode = admin_pw()
-    if pw is None:
-        raise HTTPException(status_code=503, detail="Verwaltung deaktiviert: AGENT_SANDBOX_ADMIN_PASSWORD und Legacy-Token ungesetzt")
     peer, xff = _peer(request)
     fails, until = _lock_state(peer)
     if until > time.time():
         raise HTTPException(status_code=429, detail="zu viele Fehlversuche, gesperrt",
                             headers={"Retry-After": str(int(until - time.time()) + 1)})
+    pinned = config.admin_client_cert_fingerprints()
+    if pinned:
+        for h in _client_cert_hashes(request):
+            if any(secrets.compare_digest(h, p) for p in pinned):
+                _locks.pop(peer, None)  # erfolgreicher Cert-Login setzt Zaehler und Sperre zurueck
+                store.audit("admin_auth", peer=peer, xff=xff, modus="mtls")
+                return "mtls"
+        if config.admin_mtls_required():
+            # Cert ist Pflicht: kein Basic-Fallback (Kette/PoP prueft Traefik via clientAuth)
+            _register_fail(peer)
+            await admin_fail_delay()
+            store.audit("admin_auth_fail", peer=peer, xff=xff, modus="mtls_erzwungen")
+            raise HTTPException(status_code=401)
+    pw, mode = admin_pw()
+    if pw is None:
+        raise HTTPException(status_code=503, detail="Verwaltung deaktiviert: AGENT_SANDBOX_ADMIN_PASSWORD und Legacy-Token ungesetzt")
     ok = credentials is not None and credentials.password.isascii() \
         and secrets.compare_digest(credentials.username.encode(), config.ADMIN_USERNAME.encode()) \
         and secrets.compare_digest(credentials.password.encode(), pw.encode())

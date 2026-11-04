@@ -4,6 +4,22 @@ import os
 TOKEN = os.environ.get("AGENT_SANDBOX_RELAY_TOKEN", "")  # Legacy-Token: Migration bei leerem Token-Speicher
 ADMIN_PASSWORD = os.environ.get("AGENT_SANDBOX_ADMIN_PASSWORD", "")  # admin login; unset -> bootstrap via legacy token
 ADMIN_USERNAME = os.environ.get("AGENT_SANDBOX_ADMIN_USERNAME", "admin")
+ADMIN_CLIENT_CERT_SHA256 = os.environ.get("AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256", "")  # 35th round: mTLS admin login, komma-getrennte SHA-256-Fingerprints der DER-Certs
+ADMIN_MTLS_REQUIRED = os.environ.get("AGENT_SANDBOX_ADMIN_MTLS_REQUIRED", "")  # "1": Client-Cert fuer /admin Pflicht, Basic-Passwort dann abgeschaltet
+
+
+def admin_client_cert_fingerprints():
+    # normalisierte lowercase-hex sha256-Fingerprints der DER-Certs, die /admin akzeptiert
+    out = []
+    for p in ADMIN_CLIENT_CERT_SHA256.split(","):
+        p = p.strip().replace(":", "").lower()
+        if len(p) == 64 and all(c in "0123456789abcdef" for c in p):
+            out.append(p)
+    return out
+
+
+def admin_mtls_required():
+    return ADMIN_MTLS_REQUIRED.strip().lower() in ("1", "true", "yes", "on")
 OUTMAX = 8 * 1024 * 1024  # Result-Output-Deckel 8 MiB (Nutzerentscheidung 11/2026, Abschnitt 10.7)
 FILEMAX = 8 * 1024 * 1024  # raw size per file in the file store (section 10.8)
 FILESTOREMAX = 64  # file store entries (FIFO, oldest dropped first)

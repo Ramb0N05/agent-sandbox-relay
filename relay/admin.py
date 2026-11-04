@@ -73,7 +73,8 @@ async def admin_state(request: Request, credentials: HTTPBasicCredentials | None
     await auth.require_admin(request, credentials)
     return {"budget": config.budget(), "data_bytes": store.data_bytes, "jobs": len(store.jobs),
             "files": len(store.files), "workers": len(store.workers), "submitters": len(store.submitters),
-            "exec_jobs_je_submitter": config.exec_jobs_shown()}
+            "exec_jobs_je_submitter": config.exec_jobs_shown(),
+            "mtls_aktiv": bool(config.admin_client_cert_fingerprints()), "mtls_erzwungen": config.admin_mtls_required()}
 
 
 @router.get("/admin/api/settings")

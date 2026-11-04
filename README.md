@@ -134,6 +134,18 @@ Struktur wie GET /usage, aber mit der Admin-Session statt Bearer-Token).
   ungesetzt: Verwaltung antwortet 503.
 - AGENT_SANDBOX_ADMIN_USERNAME: Nutzername der Verwaltung (Default admin,
   elfte Runde).
+- AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256: optionale mTLS-Alternative zum
+  Basic-Passwort für /admin (35. Runde): komma-getrennte SHA-256-
+  Fingerprints (hex, Doppelpunkte und Groß-/Kleinschreibung egal) der
+  DER-Encoding der Client-Zertifikate, die die Verwaltung akzeptiert.
+  Kette und Schlüsselbesitz prüft der TLS-terminierende Traefik
+  (clientAuth, siehe Abschnitt "Optionale mTLS-Client-Zertifikate"), der
+  Relay vergleicht nur den Fingerprint des weitergereichten Cert-Headers
+  konstant-zeitlich (secrets.compare_digest). Fingerprint:
+  `openssl x509 -in client.crt -outform DER | sha256sum`.
+- AGENT_SANDBOX_ADMIN_MTLS_REQUIRED: "1" macht das Client-Cert für /admin
+  zur Pflicht; Basic-Login wird dann mit 401 abgelehnt. Ohne gesetzte
+  Fingerprints hat die Variable keine Wirkung.
 - AGENT_SANDBOX_EXECJOBSHOWN: je Submitter angezeigte erledigte Jobs in
   der Verwaltung (Default 64).
 - AGENT_SANDBOX_RELAY_DATA: Verzeichnis für tokens.json und
@@ -293,3 +305,59 @@ schärmt trotzdem DoS-Volumen ab. Vorschlag als Traefik-Middleware
 Zählbasis ist die Client-IP (Remote-Adresse). Im bestehenden Stack
 terminiert Traefik selbst das TLS und zeigt direkt ins Internet, die
 Remote-Adresse ist also die echte Client-IP und die Zählung stimmt.
+
+## Optionale mTLS-Client-Zertifikate für /admin (Traefik, nicht Teil dieses Services)
+
+Ab der 35. Runde akzeptiert /admin neben dem Basic-Passwort optional ein
+mTLS-Client-Zertifikat (AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256, s. o.;
+AGENT_SANDBOX_ADMIN_MTLS_REQUIRED=1 macht es zur Pflicht). TLS terminiert
+Traefik, daher liegt die Prüfung dort: Traefik verifiziert Kette und
+Schlüsselbesitz (TLSOption clientAuth) und reicht das Cert nur dann per
+Header weiter (passTLSClientCert-Middleware); der Relay pinnt den
+SHA-256-Fingerprint der DER-Encoding (wie x5t#S256 in RFC 8705 §3.1:
+base64url(SHA-256(DER)) - hier hex; bei TLS-Terminierung am Proxy ist die
+Übertragung der Cert-Metadaten an die App selbst out of scope,
+RFC 8705 §6.5, de-facto via X-Forwarded-Tls-Client-Cert/XFCC-Header).
+
+Traefik-Dynamic-Config (Datei-Provider - TLS-Optionen und Stores sind nur
+über die Datei konfigurierbar, [Traefik TLS Options](https://doc.traefik.io/traefik/reference/routing-configuration/http/tls/tls-options/);
+querverweis aus Docker-Labels mit @file, ebenda:
+`traefik.http.routers.myrouter.tls.options=myoptions@file`), z. B.
+/etc/traefik/dynamic/relay-mtls.yml:
+
+    tls:
+      options:
+        relay-mtls:
+          minVersion: VersionTLS12
+          clientAuth:
+            caFiles:
+              - /etc/traefik/client-ca.crt   # PEM; eine Datei darf mehrere CAs enthalten
+            clientAuthType: RequireAndVerifyClientCert  # prueft Kette gegen caFiles; Varianten: VerifyClientCertIfGiven, RequireAnyClientCert
+    http:
+      middlewares:
+        strip-xfcc:                            # client-gesendete Cert-Header entfernen (leerer Wert = Remove,
+          headers:                             # [Traefik Headers](https://doc.traefik.io/traefik/v3.4/middlewares/http/headers/);
+            customRequestHeaders:              # in v2.x per Label nicht moeglich -> Datei-Provider nutzen)
+              X-Forwarded-Tls-Client-Cert: ""
+              X-Forwarded-Client-Cert: ""
+        relay-passtlsclientcert:               # setzt X-Forwarded-Tls-Client-Cert (pem=true) NUR fuer Certs,
+          passTLSClientCert:                   # die der clientAuth-Policy entsprechen
+            pem: true                            # [Traefik PassTLSClientCert](https://doc.traefik.io/traefik/middlewares/http/passtlsclientcert/);
+                                                 # PEM-Armor und \n werden entfernt, mehrere Certs komma-getrennt;
+                                                 # Header-Limit 4-8 kB beachten
+
+Router-Labels (Reihenfolge der Middlewares: strip VOR passtlsclientcert):
+
+    traefik.http.routers.agent-sandbox-relay-ssl.tls.options=relay-mtls@file
+    traefik.http.routers.agent-sandbox-relay-ssl.middlewares=agent-sandbox-relay-redirect,strip-xfcc@file,relay-passtlsclientcert@file
+    # passtlsclientcert geht auch per Label:
+    traefik.http.middlewares.relay-passtlsclientcert.passtlsclientcert.pem=true
+
+Der Relay liest X-Forwarded-Tls-Client-Cert (PEM/base64) sowie den
+Envoy-Stil X-Forwarded-Client-Cert (Feld Hash= bzw. Cert="...";
+[Hash ist der SHA-256-Digest des Certs](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers),
+Envoy sanitized den Header sonst von selbst) und hashed die DER-Encoding
+selbst. Der Container hat keine veröffentlichten Ports (nur Traefik im
+proxy-Netzwerk erreicht ihn), der Header kann also nur von Traefik
+stammen - zusammen mit strip-xfcc ist ein Vortäuschen ausgeschlossen.
+Ohne AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256 bleibt alles beim Basic-Login.

@@ -159,7 +159,7 @@ def usage_data():
         "rollen": {
             "submit": "Submit-Token: POST /jobs, GET /jobs/<id>, GET /jobs/<id>/wait, Datei-Endpunkte",
             "worker": "Worker-Token: GET /jobs/next, POST /jobs/<id>/result, Datei-Endpunkte",
-            "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/löschen, Jobs anhalten/fortsetzen/löschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD",
+            "admin": "Verwaltung (Tokens erstellen/benennen/zuordnen/löschen, Jobs anhalten/fortsetzen/löschen, Audit): GET /admin, Login mit AGENT_SANDBOX_ADMIN_USERNAME und AGENT_SANDBOX_ADMIN_PASSWORD (HTTP Basic) und/oder optional per mTLS-Client-Cert (AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256 = komma-getrennte SHA-256-Fingerprints der DER-Certs, vom TLS-Proxy per X-Forwarded-Tls-Client-Cert/X-Forwarded-Client-Cert weitergereicht; AGENT_SANDBOX_ADMIN_MTLS_REQUIRED=1 macht das Cert zur Pflicht und schaltet Basic ab)",
         },
         "grenzen": {"cmd_zeichen": config.cmd_zeichen(), "result_output_bytes": config.result_output_bytes(),
                     "datei_bytes_roh": config.datei_bytes_roh(), "job_store": config.job_store_eintraege(),

@@ -183,6 +183,16 @@ def poll_once(relay):
 
 
 def main():
+    if "<" in ENDPOINT:
+        # Platzhalter nicht ersetzt: statt [Errno -2] Name or service not known pro Poll
+        # einmal klar melden und idlen (die Endpoint-Datei wird nur beim Start gelesen;
+        # vmadmin startet den Agent nach dem Setzen des Endpoints neu).
+        print("agent-fehler: ENDPOINT ist noch der Platzhalter %r - Relay-Endpoint ueber die "
+              "vmadmin-UI setzen (Karte Relay-Endpoint / POST /admin/api/endpoint) oder die Datei "
+              "%s beschreiben; der Agent liest sie nur beim Start." % (ENDPOINT, ENDPOINT_FILE),
+              file=sys.stderr)
+        while True:
+            time.sleep(60)
     relay = Relay(ENDPOINT, TOKEN)
     while True:
         try:

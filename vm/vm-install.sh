@@ -85,12 +85,48 @@ ORIG_ARGS=()
 SEED_ISO=""
 SELF_PATH=""   # absolute path of $0, resolved in main (used by the self-update)
 VM_IP=""       # set by wait_vm_ready_api (DHCP lease of the VM)
+LOG_FILE=""    # extra log sink via --log-file
+LOG_SINKS=()   # active log files (init_log)
 
 # repo files fetched to the VM (name in repo); all downloads stay in the temp dir
 
 
-die() { printf 'Fehler: %s\n' "$1" >&2; exit 1; }
-info() { printf '%s\n' "$1"; }
+# uniform output design: colors only on a tty; every message also goes to the log sinks
+if [ -t 1 ]; then
+  C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_PHASE=$'\e[1m'; C_OFF=$'\e[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_PHASE=""; C_OFF=""
+fi
+
+log_line() {
+  local line f
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  for f in "${LOG_SINKS[@]}"; do
+    printf '%s\n' "$line" >> "$f" 2>/dev/null || true
+  done
+}
+
+init_log() {
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+  LOG_SINKS+=("/tmp/vm-install-$ts.log")
+  if touch /var/log/vm-install.log 2>/dev/null; then
+    LOG_SINKS+=("/var/log/vm-install.log")
+  else
+    printf 'Hinweis: /var/log/vm-install.log nicht beschreibbar (kein root) - nur /tmp-Log.\n' >&2
+  fi
+  if [ -n "$LOG_FILE" ]; then
+    if touch "$LOG_FILE" 2>/dev/null; then
+      LOG_SINKS+=("$LOG_FILE")
+    else
+      printf 'Hinweis: --log-file %s nicht beschreibbar - ignoriert.\n' "$LOG_FILE" >&2
+    fi
+  fi
+}
+
+die() { log_line "FEHLER: $1"; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+info() { printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
+warn() { printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "benötigtes Werkzeug fehlt: $1 (pacman -S $1 oder Paket nachtragen)"; }
 
@@ -141,6 +177,8 @@ vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren (Update nur über s
   --recreate             bestehende VM verwerfen und neu anlegen (LÖSCHT ALLE VM-DATEN)
   --yes                  Bestätigungen abkürzen
   --dry-run              nur holen, ersetzen und anzeigen; nichts anlegen oder ändern
+  --log-file PATH        zusaetzliches Logfile (neben /tmp/vm-install-<ts>.log und
+                         /var/log/vm-install.log, falls beschreibbar)
   -h | --help            diese Hilfe
 
 Ohne Root nutzbar: Zugang über den libvirt-Socket (Mitgliedschaft in der Gruppe
@@ -169,6 +207,7 @@ parse_args() {
       --recreate) RECREATE=1; shift ;;
       --yes) ASSUME_YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --log-file) LOG_FILE="${2:?--log-file braucht einen Wert}"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) die "unbekannte Option: $1 (siehe --help)" ;;
     esac
@@ -379,11 +418,11 @@ wait_vm_ready_api() {
       IFS=$'\t' read -r boot_first up_first <<< "$tsv"
       break
     fi
-    sleep 10
+    sleep 5
   done
   [ -n "$boot_first" ] || return 1
   info "vmadmin-API erreichbar (boot_id $boot_first, uptime ${up_first}s). Warte auf cloud-init done + power_state-Neustart + aktive Units ..."
-  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 240))
+  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 240)) last_status="" status_line="" 
   local bid="" up="" ci="" u_agent="" u_vm="" u_ttyd="" sysr=""
   while [ $SECONDS -lt $deadline ]; do
     vm_running || return 1
@@ -411,10 +450,14 @@ wait_vm_ready_api() {
       fi
     fi
     polls=$((polls + 1))
-    if [ $((polls % 6)) -eq 0 ]; then
-      info "Poll $polls: boot_id=${bid:-?} uptime=${up:-?}s cloud_init=${ci:-?} agent=${u_agent:-?} vm_admin=${u_vm:-?} ttyd=${u_ttyd:-?} system=${sysr:-?} rebooted=$rebooted ready=$ready"
+    status_line="boot_id=${bid:-?} uptime=${up:-?}s cloud_init=${ci:-?} agent=${u_agent:-?} vm_admin=${u_vm:-?} ttyd=${u_ttyd:-?} system=${sysr:-?} rebooted=$rebooted ready=$ready"
+    if [ "$status_line" != "$last_status" ]; then
+      info "Warte (Poll $polls): $status_line"
+      last_status="$status_line"
+    elif [ $((polls % 12)) -eq 0 ]; then
+      info "Warte (Poll $polls, seit letzter Aenderung): $status_line"
     fi
-    sleep 10
+    sleep 5
   done
   return 1
 }
@@ -645,6 +688,13 @@ update_vm() {
     -d "$files_json" "http://$ip/admin/api/update")" \
     || die "POST /admin/api/update fehlgeschlagen (http://$ip/admin/api/update)"
   printf '%s' "$resp" | jq -e '.ok == true' >/dev/null || die "Update von vmadmin abgelehnt: $resp"
+  if [ -n "$DOMAIN" ]; then
+    # Endpoint setzen, falls --domain angegeben (vmadmin startet den Agent danach neu);
+    # behebt den Platzhalter-Fehler ([Errno -2] Name or service not known im Agent-Journal)
+    curl -fsS --max-time 15 -u "$auth" -H "Content-Type: application/json" \
+      -d "{"endpoint": "$DOMAIN"}" "http://$ip/admin/api/endpoint" >/dev/null \
+      || warn "Endpoint $DOMAIN konnte nicht per API gesetzt werden (POST /admin/api/endpoint)."
+  fi
   sleep 3
   st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
   local agent_state
@@ -690,6 +740,8 @@ main() {
     *)  SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;;
   esac
   parse_args "$@"
+  init_log
+  log_line "START: $SELF_PATH ${ORIG_ARGS[*]} (dry=$DRY_RUN recreate=$RECREATE)"
   fetch_repo_files
   if [ "$DRY_RUN" -eq 0 ]; then
     need_cmd virsh
@@ -724,6 +776,12 @@ main() {
       # with --recreate), then undefine, then delete the volume.
       local rstate
       rstate="$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)"
+      # Hat virt-manager die serielle Konsole der VM offen, haengt sein GUI beim
+      # Destroy/Undefine (bekannte virt-manager-Bugs). virsh(1): console --force beendet
+      # bestehende Konsolen-Sessions - wir trennen die Session vor dem Destroy, damit das
+      # VMM-Fenster nicht einfriert. (Kein Datenzugriff ueber die Konsole, nur Session-Kick.)
+      virsh_cmd console "$VM_NAME" --force </dev/null >/dev/null 2>&1 || true
+      info "Konsolen-Session der VM getrennt (virsh console --force), falls eine bestand."
       if [ -n "$rstate" ] && [ "$rstate" != "shut off" ]; then
         info "VM ist '$rstate' - virsh destroy (sofortiges Beenden, virsh(1) destroy)."
         virsh_cmd destroy "$VM_NAME" || die "virsh destroy fehlgeschlagen"

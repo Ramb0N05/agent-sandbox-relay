@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -32,6 +33,13 @@ ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
 AGENT_SERVICE = "agent-sandbox-agent"
 TTYD_SERVICE = "ttyd-worker"
 TTYD_PORT = 7681
+# session cookie (for the /terminal iframe, which cannot send an Authorization header):
+# browsers only attach cached basic-auth credentials after a WWW-Authenticate challenge, which
+# we deliberately never send (round 14); a same-origin session cookie is sent automatically.
+SESSION_COOKIE = "vmadmin_session"
+SESSION_TTL = 12 * 3600
+SESSIONS = {}  # token -> expiry (epoch); guarded by SESSIONS_LOCK
+SESSIONS_LOCK = threading.Lock()
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -193,6 +201,46 @@ def lockout_remaining(peer):
 def clear_fails(peer):
     with _locks_guard:
         _locks.pop(peer, None)
+
+
+def session_token_from_headers(headers):
+    c = SimpleCookie()
+    try:
+        c.load(headers.get("Cookie") or "")
+    except Exception:
+        return None
+    m = c.get(SESSION_COOKIE)
+    return m.value if m else None
+
+
+def session_valid(token):
+    if not token:
+        return False
+    now = time.time()
+    with SESSIONS_LOCK:
+        exp = SESSIONS.get(token)
+        if exp is None:
+            return False
+        if exp < now:
+            del SESSIONS[token]
+            return False
+        return True
+
+
+def create_session():
+    token = secrets.token_urlsafe(24)
+    with SESSIONS_LOCK:
+        # alte Sessions desselben Alters begrenzen
+        if len(SESSIONS) > 64:
+            for k in [k for k, v in SESSIONS.items() if v < time.time()]:
+                del SESSIONS[k]
+        SESSIONS[token] = time.time() + SESSION_TTL
+    return token
+
+
+def drop_session(token):
+    with SESSIONS_LOCK:
+        SESSIONS.pop(token, None)
 
 
 def check_admin(auth_header, peer):
@@ -485,6 +533,8 @@ async function tryLogin(pw, fromSession){
   PW = pw;
   try {
     await api("/admin/api/state");
+    await fetch("/admin/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({password: pw})});  // sets the session cookie for the /terminal iframe
     sessionStorage.setItem("vmadminpw", PW);
     document.getElementById("nav").style.display = "";
     document.getElementById("mode").textContent = "angemeldet (admin)";
@@ -500,6 +550,7 @@ async function tryLogin(pw, fromSession){
 }
 async function doLogin(){ return tryLogin(document.getElementById("pw").value, false); }
 function logout(){
+  try { fetch("/admin/api/logout", {method: "POST"}); } catch (e) {}
   sessionStorage.removeItem("vmadminpw");
   location.hash = "";
   location.reload();
@@ -628,6 +679,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": csp})
 
     def _authed(self):
+        # session cookie first (iframe /terminal/ cannot send Authorization), then header
+        if session_valid(session_token_from_headers(self.headers)):
+            return True
         code, headers = check_admin(self.headers.get("Authorization"), self._peer())
         if code is not None:
             self._send_json(code, {"error": "nicht angemeldet" if code == 401 else "gesperrt"}, headers)
@@ -745,6 +799,37 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/admin/api/"):
             self._send(404, b'{"error": "nur /admin/api"}')
+            return
+        if self.path == "/admin/api/login":
+            # password in the body (the browser cannot send a challenge-based header here);
+            # sets the session cookie so the /terminal iframe is authenticated too
+            data = self._body_json()
+            peer = self._peer()
+            rem = lockout_remaining(peer)
+            if rem > 0:
+                self._send_json(429, {"error": "gesperrt"}, {"Retry-After": str(int(rem) + 1)})
+                return
+            stored = stored_admin_hash()
+            pw = data.get("password") if isinstance(data, dict) else None
+            ok = stored is not None and isinstance(pw, str) \
+                and secrets.compare_digest(sha256_hex(pw).encode(), stored.encode())
+            if not ok:
+                register_fail(peer)
+                time.sleep(0.5)
+                self._send_json(401, {"error": "falsches Passwort"})  # no WWW-Authenticate (round 14)
+                return
+            clear_fails(peer)
+            token = create_session()
+            self._send_json(200, {"ok": True}, {
+                "Set-Cookie": "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d"
+                              % (SESSION_COOKIE, token, SESSION_TTL)})
+            return
+        if self.path == "/admin/api/logout":
+            tok = session_token_from_headers(self.headers)
+            if tok:
+                drop_session(tok)
+            self._send_json(200, {"ok": True}, {
+                "Set-Cookie": "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" % SESSION_COOKIE})
             return
         if not self._authed():
             return

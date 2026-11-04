@@ -367,23 +367,28 @@ proxy-Netzwerk erreicht ihn), der Header kann also nur von Traefik
 stammen - zusammen mit strip-xfcc ist ein Vortäuschen ausgeschlossen.
 Ohne AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256 bleibt alles beim Basic-Login.
 
-## Versionierung (40. Runde: harmonisiert, Stil x.y.z-<tag>, unabhaengige Versionen)
+## Versionierung (41. Runde: VERSION-Datei als einzige Wahrheit, gemeinsames Bump-Skript im Cache-Repo)
 
-Beide Komponenten nutzen denselben Stil `x.y.z-<tag>` (Start jeweils `0.0.1-dev`),
-aber **unabhaengige** Versionen:
+Stil: `x.y.z-<tag>` (SemVer 2.0.0), unabhaengige Versionen pro Komponente.
 
-- relayadmin (main): `relay/VERSION` (z. B. `0.0.1-dev`). Der Relay liest die Datei
-  beim Start (`config.version()`, Fallback `0.0.1-dev`), liefert sie in
-  `GET /admin/api/state` als `version`, die Admin-UI zeigt sie unter der
-  „angemeldet“-Info (`angemeldet als admin · v0.0.1-dev`). Automatisierter Bump nach
-  jedem Push auf main:
-  `tools/bump-version.sh [patch|minor|major] && git add relay/VERSION && git commit -m "version bump (relay)" && git push origin main`
-  (Default patch, Tag nach `-` bleibt erhalten: 0.0.1-dev -> 0.0.2-dev).
-- vmadmin (worker): `VERSION_SRC = "0.0.1-dev"` in `files/vmadmin` (Fallback, wenn
-  `/etc/vmadmin.version` fehlt). Automatisierter Bump nach jedem Push auf worker:
-  `tools/bump-version.sh [patch|minor|major]` bumpt die Konstante in `files/vmadmin`.
-  Laufzeit: `/etc/vmadmin.version` wird von cloud-init beim Erstboot geschrieben
-  (install-script ersetzt `__VMADMIN_VERSION__` in der user-data durch die
-  `VERSION_SRC` der eingebetteten vmadmin) und von `run_vm_update` bei jedem Update
-  (extract aus der heruntergeladenen vmadmin-Datei). Anzeige unter der
-  „angemeldet“-Info in vmadmin (`angemeldet (admin) · v0.0.1-dev`).
+- **VERSION-Datei ist die einzige Wahrheit.** relayadmin liest zur Laufzeit nur
+  `relay/VERSION` (`config.version()`); vmadmin liest in der VM nur
+  `/etc/vmadmin.version` (Repo-Entsprechung: `VERSION` auf dem worker-Branch).
+  Keine Versions-Konstante mehr im Code.
+- **Gemeinsames Bump-Skript** (lebt nur im Cache-Repo, nicht hier):
+  `agent-sandbox-relay/tools/bump-version.sh <VERSION-datei> [major|minor|patch|prerelease|release] [tag]`
+  Es aendert ausschliesslich die angegebene VERSION-Datei. Regeln wie SemVer 2.0.0
+  (semver.org, Quelle 208) und node-semver `inc()` (Quelle 209); bump-my-version ist
+  das etablierte Werkzeug derselben Regeln (Quelle 210). Nach jedem Push:
+  - main:    `tools/bump-version.sh relay/VERSION prerelease` (Dev-Phase, tag bleibt)
+            + commit + push
+  - worker:  `tools/bump-version.sh VERSION prerelease` (im Kanon-Clone auf worker)
+            + commit + push
+  Level: `patch|minor|major` inkrementieren den Kern und verwerfen pre/build
+  (semver.org §6-8), `release` streicht nur den pre-Tag, `prerelease [tag]`
+  inkrementiert die pre-Kennung (0.0.2-dev -> 0.0.2-dev.0 -> 0.0.2-dev.1; neuer tag
+  -> 0.0.2-rc.0). build-Metadaten (+...) werden verworfen (§10).
+- Anzeige: relayadmin „angemeldet als admin · v0.0.2-dev“ (aus `/admin/api/state`),
+  vmadmin „angemeldet (admin) · v0.0.2-dev“. In der VM schreiben cloud-init
+  (install-script rendert `__VMADMIN_VERSION__` aus der Repo-VERSION-Datei) und
+  `run_vm_update` (laedt `VERSION` mit) die Datei `/etc/vmadmin.version`.

@@ -30,7 +30,7 @@ CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "agent-sandbox")
 TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
 ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
 ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
-VERSION_FILE = "/etc/vmadmin.version"  # einzige Wahrheit zur Laufzeit; wird von cloud-init (install-script) und run_vm_update aus der Repo-VERSION-Datei geschrieben
+VERSION_FILE = "/etc/vmadmin.version"  # einzige Wahrheit zur Laufzeit; wird von vm-bootstrap (install/update) aus der Repo-VERSION-Datei geschrieben
 
 
 def read_version():
@@ -59,10 +59,6 @@ SESSIONS_LOCK = threading.Lock()
 HISTORY_FILE = os.path.join(CONF_DIR, "history.jsonl")
 HISTORY_SHOWN = 200
 MAX_BODY = 1024 * 1024  # 1 MiB Request-Body-Deckel (sonst 413)
-UPDATE_REPO = "Ramb0N05/agent-sandbox-relay"
-UPDATE_FILES = ["files/agent-sandbox-agent", "files/vmadmin",
-                "files/agent-sandbox-agent.service", "files/vm-admin.service",
-                "files/ttyd-worker.service", "cloud-init/sandbox-worker-user-data.yaml", "VERSION"]
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -128,91 +124,6 @@ def write_atomic(path, content, mode=0o600):
 def _http_get(url):
     r = run(["curl", "-fsSL", "--max-time", "30", url])
     return r.stdout if r.returncode == 0 else None
-
-
-def _apply_user_data_extras(ud_path):
-    # 47th round: komplette VM-Umgebung wie nach frischem cloud-init nachziehen,
-    # soweit idempotent: packages aus dem user-data packages:-Block nachinstallieren
-    # und die /etc/profile.d-Alias-Zeile erneut anwenden. ssh-Entfernung, growpart und
-    # serial-getty liefen bereits bei der Erstprovision und bleiben unangetastet.
-    # Die Konfiguration (~/.config/agent-sandbox: Token, Endpoint, Admin-Hash) bleibt erhalten.
-    try:
-        ud = open(ud_path, encoding="utf-8").read()
-    except OSError:
-        return
-    pkgs = []
-    m = re.search(r"^packages:\n((?:  - .*\n?)+)", ud, re.M)
-    if m:
-        for line in m.group(1).splitlines():
-            line = line.strip()
-            if line.startswith("- "):
-                pkg = line[2:].split("#")[0].strip()
-                if pkg:
-                    pkgs.append(pkg)
-    if pkgs:
-        run(["pacman", "-S", "--noconfirm", "--needed"] + pkgs, sudo=True)
-    for line in ud.splitlines():
-        ls = line.strip()
-        if ls.startswith("- ") and "lrzsz-alias.sh" in ls:
-            run(["sh", "-c", ls[2:].split("#")[0].strip()], sudo=True)
-
-
-def run_vm_update(domain=None):
-    # Update laeuft vollstaendig in der VM: ALLE Worker-Dateien + VERSION + user-data vom
-    # oeffentlichen Repo holen (Branch-HEAD -> Commit-SHA, raw@<sha> ist immutable),
-    # installieren, Pakete/Config-Extras nachziehen, daemon-reload, agent + ttyd restarten;
-    # vm-admin-Restart DETACHED (systemd-run --on-active), sonst curl (52) Empty reply.
-    # Endzustand wie nach --recreate, nur ~/.config/agent-sandbox (Token/Endpoint/Passwort) bleibt.
-    sha = _http_get("https://api.github.com/repos/%s/commits/worker" % UPDATE_REPO)
-    m = re.search(r'"sha":\s*"([0-9a-f]{40})"', sha or "")
-    base = "https://raw.githubusercontent.com/%s/%s" % (UPDATE_REPO, m.group(1) if m else "worker")
-    os.makedirs("/tmp/vm-update", exist_ok=True)
-    for f in UPDATE_FILES:
-        data = _http_get("%s/%s" % (base, f))
-        if data is None:
-            return False, "Download fehlgeschlagen: %s (base %s)" % (f, base)
-        name = f.split("/")[-1]
-        src = os.path.join("/tmp/vm-update", name)
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write(data)
-        os.chmod(src, 0o600)
-    if domain:
-        src = "/tmp/vm-update/agent-sandbox-agent"
-        with open(src, encoding="utf-8") as fh:
-            agent = fh.read()
-        if "<agent-sandbox-relay-domain>" in agent:
-            with open(src, "w", encoding="utf-8") as fh:
-                fh.write(agent.replace("<agent-sandbox-relay-domain>", domain))
-    installs = [
-        ("/tmp/vm-update/agent-sandbox-agent", "/usr/local/bin/agent-sandbox-agent", "worker", "0700"),
-        ("/tmp/vm-update/vmadmin", "/usr/local/bin/vmadmin", "worker", "0700"),
-        ("/tmp/vm-update/agent-sandbox-agent.service", "/etc/systemd/system/agent-sandbox-agent.service", "root", "0644"),
-        ("/tmp/vm-update/vm-admin.service", "/etc/systemd/system/vm-admin.service", "root", "0644"),
-        ("/tmp/vm-update/ttyd-worker.service", "/etc/systemd/system/ttyd-worker.service", "root", "0644"),
-    ]
-    for src, target, owner, mode in installs:
-        r = run(["install", "-o", owner, "-g", owner, "-m", mode, src, target], sudo=True)
-        if r.returncode != 0:
-            return False, "install %s fehlgeschlagen: %s" % (target, r.stderr.strip())
-    _apply_user_data_extras("/tmp/vm-update/sandbox-worker-user-data.yaml")
-    run(["systemctl", "daemon-reload"], sudo=True)
-    # Self-Heal (44. Runde): CONF_DIR muss worker gehoeren, sonst write_atomic -> Permission denied
-    run(["chown", "-R", "worker:worker", CONF_DIR], sudo=True)
-    run(["chmod", "700", CONF_DIR], sudo=True)
-    # Versionsstand automatisiert setzen: Inhalt der Repo-VERSION-Datei (einzige Wahrheit)
-    vsrc = "unbekannt"
-    try:
-        with open("/tmp/vm-update/VERSION", encoding="utf-8") as f:
-            v = f.read().strip()
-            if v:
-                vsrc = v
-    except OSError:
-        pass
-    run(["sh", "-c", "printf '%s\\n' '" + vsrc + "' > " + VERSION_FILE], sudo=True)
-    run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
-    run(["systemctl", "restart", TTYD_SERVICE], sudo=True)
-    run(["systemd-run", "--on-active=2s", "systemctl", "restart", "vm-admin.service"], sudo=True)
-    return True, "ok (base %s, version %s)" % (base, vsrc)
 
 
 def run(cmd_argv, sudo=False):
@@ -957,7 +868,7 @@ document.getElementById("auto-int").addEventListener("change", function(){
 document.getElementById("btn-save-settings").addEventListener("click", saveSettings);
 document.getElementById("dlg-result-ok").addEventListener("click", function(){ document.getElementById("dlg-result").close(); });
 async function vmUpdate(){
-  // Update komplett in der VM (run_vm_update hinter POST /admin/api/update); nur anstossen
+  // Update komplett in der VM via vm-bootstrap (POST /admin/api/update ruft die Binary auf); nur anstossen
   var ok = await showConfirm("Update starten", "Worker-Dateien aus dem Repo laden, installieren und agent + vm-admin neu starten?");
   if (!ok){ return; }
   var msg = document.getElementById("vm-update-msg");
@@ -1239,13 +1150,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
                 return
             if self.path == "/admin/api/update":
-                # Update-Routine komplett in der VM (run_vm_update); Body nur
-                # optional {"domain": "..."} - klein, kein Datei-Payload mehr.
+                # 48. Runde: Update komplett in der VM, aber in EIGENER Binary ausgelagert:
+                # API ruft nur noch /usr/local/bin/vm-bootstrap update [domain] auf
+                # (vm-bootstrap installiert/aktualisiert ALLES in der VM; vm-admin-Restart
+                # macht es selbst detached -> Antwort bricht nicht ab, kein curl (52)).
                 domain = data.get("domain") if isinstance(data, dict) else None
                 if domain is not None and not validate_endpoint(domain):
                     self._send_json(422, {"error": "domain ungueltig (https-URL)"}); return
-                ok, detail = run_vm_update(domain or None)
-                self._send_json(200 if ok else 500, {"ok": ok, "detail": detail})
+                argv = ["/usr/local/bin/vm-bootstrap", "update"] + ([domain] if domain else [])
+                r = run(argv, sudo=True)
+                out = (r.stdout + r.stderr).strip()
+                detail = "\n".join(out.splitlines()[-20:])
+                self._send_json(200 if r.returncode == 0 else 500, {"ok": r.returncode == 0, "detail": detail})
                 return
             if self.path == "/admin/api/service" and "unit" in data:
                 unit = data["unit"]

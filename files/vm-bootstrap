@@ -1,0 +1,87 @@
+#!/bin/sh
+# vm-bootstrap - einzige Binary, die die sandbox-worker-VM komplett einrichtet UND aktualisiert
+# (48. Runde). cloud-init laedt nur diese Datei und fuehrt `vm-bootstrap install` aus;
+# die vmadmin-API (POST /admin/api/update) ruft `vm-bootstrap update` auf.
+# vm-install.sh fuehrt selbst keine Befehle in der VM aus - es wartet nur auf API-Antworten.
+#
+# Ablauf (install wie update): worker-HEAD per GitHub-REST zu Commit-SHA aufloesen
+# (raw@<sha> ist immutable, Branch-Refs sind am CDN gecacht - Quelle 188), alle Worker-Dateien
+# von raw@<sha> laden, installieren, cloud-init-Extras anwenden (Pakete, ssh-Entfernung,
+# serial-getty-Autologin, sz/rz-Aliase, CONF_DIR-Rechte, /etc/vmadmin.version), daemon-reload,
+# Units starten. Config in /home/worker/.config/agent-sandbox (Token/Endpoint/Admin-Hash) bleibt.
+#
+# Modi:  vm-bootstrap install [domain]   (Erstprovision per cloud-init; domain optional)
+#        vm-bootstrap update  [domain]   (Update; vm-admin-Restart detached, sonst curl (52), Quelle 195)
+set -eu
+
+REPO="Ramb0N05/agent-sandbox-relay"
+MODE="${1:-update}"
+DOMAIN_ARG="${2:-}"
+D="/tmp/vm-bootstrap.d"
+# volle Paketliste der VM-Umgebung (einzige Quelle; user-data installiert nur curl+ca-certificates,
+# damit der Bootstrap selbst laden kann)
+PACKAGES="git curl ca-certificates inetutils jq ttyd lrzsz python3 cloud-utils"
+FILES="files/agent-sandbox-agent files/vmadmin files/agent-sandbox-agent.service files/vm-admin.service files/ttyd-worker.service cloud-init/sandbox-worker-user-data.yaml VERSION"
+
+# worker-HEAD -> Commit-SHA (immutable raw-URL)
+sha="$(curl -fsSL "https://api.github.com/repos/$REPO/commits/worker" 2>/dev/null | grep -oE '"sha": *"[0-9a-f]{40}"' | head -1 | grep -oE '[0-9a-f]{40}')" || true
+if [ -n "$sha" ]; then
+  BASE="https://raw.githubusercontent.com/$REPO/$sha"
+else
+  BASE="https://raw.githubusercontent.com/$REPO/worker"
+  sha="worker(branch)"
+fi
+echo "vm-bootstrap: base raw@$sha"
+
+rm -rf "$D"; mkdir -p "$D"
+for f in $FILES; do
+  name="$(printf '%s' "$f" | tr '/' '_')"
+  curl -fsSL "$BASE/$f" -o "$D/$name" || { echo "vm-bootstrap: Download fehlgeschlagen: $f" >&2; exit 1; }
+done
+
+# optionalen Relay-Domain-Platzhalter im Agent ersetzen (vm-install --domain rendert ihn in die user-data)
+if [ -n "$DOMAIN_ARG" ] && [ "$DOMAIN_ARG" != "<agent-sandbox-relay-domain>" ]; then
+  sed -i "s|<agent-sandbox-relay-domain>|$DOMAIN_ARG|g" "$D/files_agent-sandbox-agent"
+fi
+
+# installieren
+install -o worker -g worker -m 0700 "$D/files_agent-sandbox-agent" /usr/local/bin/agent-sandbox-agent
+install -o worker -g worker -m 0700 "$D/files_vmadmin" /usr/local/bin/vmadmin
+install -o root -g root -m 0644 "$D/files_agent-sandbox-agent.service" /etc/systemd/system/agent-sandbox-agent.service
+install -o root -g root -m 0644 "$D/files_vm-admin.service" /etc/systemd/system/vm-admin.service
+install -o root -g root -m 0644 "$D/files_ttyd-worker.service" /etc/systemd/system/ttyd-worker.service
+
+# cloud-init-Extras (wie bei Erstprovision): Pakete, ssh entfernen, serial-getty-Autologin, Aliase
+pacman -S --noconfirm --needed $PACKAGES
+systemctl disable --now sshd 2>/dev/null || true
+pacman -Rns --noconfirm openssh 2>/dev/null || true
+rm -f /etc/ssh/ssh_host_*key*
+growpart /dev/vda 3 2>/dev/null || true
+btrfs filesystem resize max / 2>/dev/null || true
+mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d
+printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --noreset --noclear --autologin worker --keep-baud 115200,57600,38400,9600 - $TERM\n' \
+  > /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+printf 'alias sz=lrzsz-sz\nalias rz=lrzsz-rz\n' > /etc/profile.d/lrzsz-alias.sh
+# CONF_DIR: worker-owned (write_atomic/mkstemp in vmadmin), Self-Heal fuer bestehende VMs (44. Runde)
+mkdir -p /home/worker/.config/agent-sandbox
+chown -R worker:worker /home/worker/.config/agent-sandbox
+chmod 700 /home/worker/.config/agent-sandbox
+# Versionsstand: Inhalt der Repo-VERSION-Datei (einzige Wahrheit, 41. Runde)
+cp "$D/VERSION" /etc/vmadmin.version
+chmod 644 /etc/vmadmin.version
+
+systemctl daemon-reload
+case "$MODE" in
+  install)
+    systemctl enable --now agent-sandbox-agent.service ttyd-worker.service vm-admin.service
+    systemctl restart serial-getty@ttyS0.service
+    ;;
+  update)
+    systemctl restart agent-sandbox-agent.service ttyd-worker.service
+    # vm-admin-Restart DETACHED: synchron wuerde die laufende HTTP-Antwort killen (curl (52) Empty reply, Quelle 195)
+    systemd-run --on-active=2s systemctl restart vm-admin.service
+    ;;
+  *)
+    echo "vm-bootstrap: unbekannter Modus: $MODE (install|update)" >&2; exit 1 ;;
+esac
+echo "vm-bootstrap: ok mode=$MODE sha=$sha version=$(cat /etc/vmadmin.version)"

@@ -137,6 +137,11 @@ init_log() {
 
 bar_total=0 bar_done=0 bar_label="" spin_i=0
 bar_setup() {
+  # 48th round: beim Start Konsole leeren (clear + home), sonst ueberschreibt der
+  # Balken die bestehende Konsolenausgabe
+  if [ "$TTY" -eq 1 ]; then
+    printf '\033[2J\033[H'   # clear screen + cursor home
+  fi
   # apt-style: pin the status bar on the LAST terminal row via a VT100 scroll region
   # (DECSTBM \033[1;N r on rows 1..ROWS-1). Normal output scrolls inside the region,
   # the bar row stays put. Debian/apt apt-pkg/install-progress.cc SetupTerminalScrollArea()
@@ -145,9 +150,11 @@ bar_setup() {
   printf '\033[1;%dr' "$((ROWS - 1))"
 }
 bar_teardown() {
-  # reset scroll region + clear everything below the cursor (apt Stop(): \033[1;Nr + \033[J)
+  # 48th round: am Ende NICHT \033[J (das loescht die gesamte sichtbare Konsole inkl.
+  # Log-Zeilen + Initialwerte). Nur Scroll-Region zuruecksetzen und die Balken-Zeile
+  # selbst leeren (\r + \033[2K clear-line), Cursor darunter auf neue Zeile.
   [ "$TTY" -eq 1 ] && [ "$ROWS" -ge 4 ] || return 0
-  printf '\033[1;%dr\033[J' "$ROWS"
+  printf '\033[1;%dr\033[%d;1H\r\033[2K\n' "$ROWS" "$ROWS"
 }
 _render_line() {
   # status bar on the pinned bottom row: DECSC (save cursor), move to row ROWS, \r-draw, DECRC
@@ -433,12 +440,7 @@ render_user_data() {
     ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   fi
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
-  # Versionsstand fuer vmadmin: Inhalt der Repo-VERSION-Datei (einzige Wahrheit, worker-Root)
-  fetch_one "VERSION"
-  local vsrc
-  vsrc="$(tr -d '[:space:]' < "$WORKDIR/VERSION")"
-  [ -n "$vsrc" ] || vsrc="0.0.1-dev"
-  ud="${ud//__VMADMIN_VERSION__/$vsrc}"  # -> /etc/vmadmin.version per cloud-init runcmd
+
   case "$ud" in
     *"<vm-admin-passwort>"*|*"<ttyd-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;

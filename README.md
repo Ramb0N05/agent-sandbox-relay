@@ -21,6 +21,10 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   deshalb kein Reboot bei jedem Boot). vm/vm-install.sh rendert sie
   beim Anlegen nur temporär (Abschnitt unten); virt-install hängt sie
   als NoCloud-ISO nur beim ersten Boot an.
+- files/vm-bootstrap: einzige Binary fuer die gesamte VM-Einrichtung/-Update (48. Runde):
+  cloud-init laedt nur diese Datei und fuehrt `vm-bootstrap install` aus; die vmadmin-API
+  (POST /admin/api/update) ruft `vm-bootstrap update` auf. vm-install.sh fuehrt keine Befehle
+  in der VM aus, es wartet nur auf API-Antworten.
 - files/agent-sandbox-agent: Pull-Agent (elfte Runde: Python statt bash;
   Long-Poll gegen die Queue mit persistenter HTTP-Verbindung und einem
   Reconnect-Retry je Aufruf statt einem curl-Prozess je Request, kein

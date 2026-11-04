@@ -209,17 +209,24 @@ render_user_data() {
 
 install_vm() {
   [ -n "$DOMAIN" ] || die "--domain fehlt (siehe --help)"
+  render_user_data
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # a dry run must not require host resources (no backing image, no libvirt)
+    if [ ! -e "$BACKING" ]; then
+      info "Hinweis: Basisimage fehlt (bei der echten Anlage Pflicht): $BACKING (--backing)"
+    fi
+    if [ -e "$DISK" ]; then
+      info "Hinweis: Overlay existiert bereits: $DISK (echte Anlage bricht hier ab, --recreate für Neu-Anlage)"
+    fi
+    info "Dry-Run: würde virt-install starten ($MEM_MIB MiB, $VCPUS vCPUs, Disk $DISK_GB GiB auf $DISK, Backing $BACKING)."
+    print_initial_values
+    return 0
+  fi
   [ -e "$BACKING" ] || die "Basisimage fehlt: $BACKING (--backing)"
   if disk_exists; then
     die "Overlay existiert bereits: $DISK
 cloud-init läuft nur einmal pro Overlay (per-instance); eine Neu-Provisionierung braucht
 ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehenden VM)."
-  fi
-  render_user_data
-  if [ "$DRY_RUN" -eq 1 ]; then
-    info "Dry-Run: würde virt-install starten ($MEM_MIB MiB, $VCPUS vCPUs, Disk $DISK_GB GiB auf $DISK, Backing $BACKING)."
-    print_initial_values
-    return 0
   fi
   need_cmd virt-install
   # --noautoconsole: no automatic console connect, virt-install returns (virt-install(1))

@@ -328,6 +328,22 @@ write_files:
       TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
       ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
       ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
+      VERSION_FILE = "/etc/vmadmin.version"  # wird von cloud-init (install-script) und run_vm_update geschrieben
+
+
+      def read_version():
+          # Versionsstand: Datei /etc/vmadmin.version ("worker-<sha7>"), Fallback dev
+          try:
+              with open(VERSION_FILE, encoding="utf-8") as f:
+                  v = f.read().strip()
+                  if v:
+                      return v
+          except OSError:
+              pass
+          return "0.0.1-dev"
+
+
+      VERSION = read_version()
       AGENT_SERVICE = "agent-sandbox-agent"
       TTYD_SERVICE = "ttyd-worker"
       TTYD_PORT = 7681
@@ -451,8 +467,11 @@ write_files:
           run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
           # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
           # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
+          # Versionsstand automatisiert setzen: worker-<sha7> des Commits, von dem geladen wurde
+          sha_short = (m.group(1) if m else "unknown")[:7]
+          run(["sh", "-c", "printf 'worker-%s\\n' > %s" % (sha_short, VERSION_FILE)], sudo=True)
           run(["systemd-run", "--on-active=2s", "systemctl", "restart", "vm-admin.service"], sudo=True)
-          return True, "ok (base %s)" % base
+          return True, "ok (base %s, version worker-%s)" % (base, sha_short)
 
 
       def run(cmd_argv, sudo=False):
@@ -525,6 +544,7 @@ write_files:
               "ttyd": ttyd.stdout.strip() or "unbekannt",
               "token_mask": tok_mask,
               "endpoint": endpoint,
+              "version": VERSION,
           }
 
 
@@ -916,12 +936,12 @@ write_files:
       async function tryLogin(pw, fromSession){
         PW = pw;
         try {
-          await api("/admin/api/state");
+          var d = await api("/admin/api/state");
           await fetch("/admin/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
                       body: JSON.stringify({password: pw})});  // sets the session cookie for the /terminal iframe
           sessionStorage.setItem("vmadminpw", PW);
           document.getElementById("nav").style.display = "";
-          document.getElementById("mode").textContent = "angemeldet (admin)";
+          document.getElementById("mode").textContent = "angemeldet (admin) · v" + (d.version || "?");
           showPage(pageFromHash());
           return true;
         } catch (e){
@@ -942,6 +962,7 @@ write_files:
       async function refreshStatus(){
         var d;
         try { d = await api("/admin/api/state"); } catch (e){ return; }
+        document.getElementById("mode").textContent = "angemeldet (admin) · v" + (d.version || "?");
         document.getElementById("st-host").textContent = d.hostname;
         document.getElementById("st-uptime").textContent = fmtUptime(d.uptime_s);
         document.getElementById("st-load").textContent = (d.load || []).join(" / ") || "-";
@@ -1401,6 +1422,8 @@ runcmd:
   - chmod 600 /home/worker/.config/agent-sandbox/admin-hash
   - systemctl enable --now vm-admin.service
   - systemctl restart serial-getty@ttyS0.service
+  - echo '__VMADMIN_VERSION__' > /etc/vmadmin.version  # install-script ersetzt den Platzhalter beim Rendern durch worker-<sha7>
+  - printf 'alias sz=lrzsz-sz\nalias rz=lrzsz-rz\n' > /etc/profile.d/lrzsz-alias.sh  # permanente sz/rz-Aliase (lrzsz; ZMODEM in ttyd)
 
 power_state:
   mode: reboot

@@ -72,6 +72,7 @@ MEM_MIB="8192"
 VCPUS="4"
 USER_DATA=""
 RAW_BASE="https://raw.githubusercontent.com/Ramb0N05/agent-sandbox-relay/worker"
+RAW_SHA_SHORT="unbekannt"  # wird von resolve_raw_base auf die ersten 7 Zeichen des Commit-SHA gesetzt
 DOMAIN=""
 WORKER_TOKEN=""
 ADMIN_PW=""
@@ -124,41 +125,76 @@ init_log() {
   fi
 }
 
-bar_total=0 bar_done=0 bar_open=0
+bar_total=0 bar_done=0 bar_open=0 spin_i=0
+term_w() {
+  # Terminalbreite fuer die globale Statuszeile (Fallback 80, mind. 40)
+  local w
+  w="$(tput cols 2>/dev/null || echo 80)"
+  case "$w" in (*[!0-9]*|"") w=80 ;; esac
+  [ "$w" -lt 40 ] && w=40
+  echo "$w"
+}
+_render_line() {
+  # globale Statuszeile in voller Terminalbreite, permanent mit \r ueberschrieben:
+  #   [######   [ aktuelle Aufgabe ]   #####]  45%
+  # Prozent rechts, Aufgabe mittig in eckigen Klammern ueber dem Balken;
+  # Balkenfuellung = floor(Prozent * Breite) wie bei apt (Debian/apt install-progress.cc)
+  local label="$1" w bw pct filled pad lab start
+  w="$(term_w)"
+  bw=$((w - 8))                 # "[" + "]" + " 100%" (+1 Puffer)
+  [ "$bw" -lt 10 ] && bw=10
+  pct=0; filled=0
+  if [ "$bar_total" -gt 0 ]; then
+    pct=$((bar_done * 100 / bar_total))
+    filled=$((bar_done * bw / bar_total))
+  fi
+  [ "$filled" -gt "$bw" ] && filled=$bw
+  pad="$(printf '#%.0s' $(seq 1 $filled))"
+  if [ "$filled" -gt 0 ] && [ "$filled" -lt "$bw" ]; then pad="${pad}>"; fi
+  while [ ${#pad} -lt "$bw" ]; do pad="${pad} "; done
+  lab="[ ${label} ]"
+  if [ ${#lab} -gt "$bw" ]; then lab="${lab:0:$((bw - 1))}]"; fi
+  start=$(( (bw - ${#lab}) / 2 ))
+  pad="${pad:0:$start}${lab}${pad:$((start + ${#lab}))}"
+  printf '\r%s[%s]%4d%%%s' "$C_PHASE" "$pad" "$pct" "$C_OFF"
+  if [ "$bar_total" -gt 0 ] && [ "$bar_done" -ge "$bar_total" ]; then printf '\n'; bar_open=0; else bar_open=1; fi
+}
 bar() {
-  # overall progress bar im apt-Stil: bar <done> <total> <label> -> [####>     ]  45%  label
-  # (einzeilig mit \r ueberschreiben; apt: Balkenfuellung = floor(Prozent * Balkenbreite),
-  #  Debian/apt apt-pkg/install-progress.cc: BarDone = floor(Percent * BarSize); '>' als Spitze)
-  local done="$1" total="$2" label="$3" pct filled barstr
+  # globaler Fortschrittsbalken (permanente Statuszeile): bar <done> <total> <label>
+  local done="$1" total="$2" label="$3" pct=0
   bar_done="$done"; bar_total="$total"
-  if [ "$total" -le 0 ]; then return 0; fi
-  pct=$((done * 100 / total))
-  filled=$((done * 20 / total))
-  barstr="$(printf '#%.0s' $(seq 1 $filled))"
-  if [ "$filled" -gt 0 ] && [ "$filled" -lt 20 ]; then barstr="${barstr}>"; fi
-  while [ ${#barstr} -lt 20 ]; do barstr="${barstr} "; done
-  printf '\r%s[%s] %3d%%  %s%s' "$C_PHASE" "$barstr" "$pct" "$label" "$C_OFF"
-  if [ "$done" -ge "$total" ]; then printf '\n'; bar_open=0; else bar_open=1; fi
+  [ "$total" -gt 0 ] && pct=$((done * 100 / total))
+  _render_line "$label"
   log_line "PROGRESS: $done/$total ($pct%%) $label"
 }
+subbar() {
+  # kleiner Sub-Balken (20 Zeichen, eigene Zeile) fuer Subprozesse wie Downloads
+  local pct="$1" label="$2" filled pad
+  bar_nl
+  filled=$((pct * 20 / 100))
+  pad="$(printf '#%.0s' $(seq 1 $filled))"
+  if [ "$filled" -gt 0 ] && [ "$filled" -lt 20 ]; then pad="${pad}>"; fi
+  while [ ${#pad} -lt 20 ]; do pad="${pad} "; done
+  printf '\r%s[%s] %3d%%  %s%s' "$C_PHASE" "$pad" "$pct" "$label" "$C_OFF"
+  if [ "$pct" -ge 100 ]; then printf '\n'; fi
+}
 bar_nl() {
-  # offene Bar-Zeile vor normaler Ausgabe abschliessen, sonst landet der Text in der Bar-Zeile
+  # offene Statuszeile vor normaler Ausgabe abschliessen, sonst landet der Text in der Balkenzeile
   if [ "$bar_open" -eq 1 ]; then printf '\n'; bar_open=0; fi
 }
 spin_tick() {
-  # interaktiver Warte-Indicator im Terminal: spin_tick <label>
+  # Activity-Indicator fuer wartende Prozesse (z.B. Polling) in der globalen Statuszeile
   local label="$1"
   spin_i=$(( (spin_i + 1) % 4 ))
-  local c="\|/-"
-  printf '\r%s%c%s %s' "$C_WARN" "${c:$spin_i:1}" "$C_OFF" "$label"
+  local c="\\|/-"
+  _render_line "${c:$spin_i:1} $label"
 }
-spin_clear() { printf '\r%80s\r' ""; }
+spin_clear() { local w; w="$(term_w)"; printf '\r%*s\r' "$w" ""; }
 
 die() { log_line "FEHLER: $1"; bar_nl; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 info() { bar_nl; printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
 warn() { bar_nl; printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
 hot() { bar_nl; printf '%s%s%s\n' "$C_HOT" "$1" "$C_OFF"; log_line "HOT: $1"; }  # rot+fett fuer zerstoererische Warnungen
-spin_i=0
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "benötigtes Werkzeug fehlt: $1 (pacman -S $1 oder Paket nachtragen)"; }
 
@@ -346,6 +382,7 @@ resolve_raw_base() {
     head_sha="$(curl -fsSL "https://api.github.com/repos/$repo_slug/commits/$ref" 2>/dev/null | grep -oE '"sha": *"[0-9a-f]{40}"' | head -1 | grep -oE '[0-9a-f]{40}')" || true
     if [ -n "$head_sha" ]; then
       RAW_BASE="https://raw.githubusercontent.com/$repo_slug/$head_sha"
+      RAW_SHA_SHORT="${head_sha:0:7}"
       log_line "INFO: Repo-HEAD $ref -> Commit $head_sha (immutable raw-URL, kein CDN-Cache)."
     fi
   fi
@@ -356,8 +393,10 @@ fetch_one() {
   # $1 = Pfad im Repo; Dateiname = Pfad mit / -> _
   local f="$1"
   local target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
+  subbar 0 "Download: $f"
   curl -fsSL "$RAW_BASE/$f" -o "$target" || die "Download fehlgeschlagen: $RAW_BASE/$f"
   [ -s "$target" ] || die "leere Datei vom Repo: $f"
+  subbar 100 "Download: $f"
   log_line "INFO: geholt: $f -> $target"
 }
 
@@ -374,6 +413,7 @@ render_user_data() {
     ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   fi
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
+  ud="${ud//__VMADMIN_VERSION__/worker-$RAW_SHA_SHORT}"  # Versionsstand fuer vmadmin (/etc/vmadmin.version)
   case "$ud" in
     *"<vm-admin-passwort>"*|*"<ttyd-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;

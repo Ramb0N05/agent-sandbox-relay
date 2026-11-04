@@ -188,6 +188,27 @@ def run(cmd_argv, sudo=False):
     return subprocess.run(argv, capture_output=True, text=True, timeout=30)
 
 
+def restart_agent():
+    # Agent neu starten; bei rc!=0 Diagnoseschnipsel aus systemctl status mitgeben
+    # (42nd round: 500 mit nichtssagendem Body war nicht diagnostizierbar)
+    try:
+        r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
+    except Exception as e:
+        return 1, "restart-Ausfuehrung fehlgeschlagen: %s" % e
+    if r.returncode == 0:
+        return 0, ""
+    detail = (r.stderr.strip() or r.stdout.strip() or "")
+    try:
+        st = run(["systemctl", "status", AGENT_SERVICE, "--no-pager", "-n", "15", "-l"], sudo=True)
+        tail = "\n".join((st.stdout + st.stderr).strip().splitlines()[-12:])
+        if tail:
+            detail = (detail + "\n" if detail else "") + tail
+    except Exception:
+        pass
+    print("WARN: restart %s rc=%d: %s" % (AGENT_SERVICE, r.returncode, detail), flush=True)  # landet im Journal
+    return r.returncode, detail
+
+
 def read_proc_uptime():
     with open("/proc/uptime", encoding="ascii") as f:
         return int(float(f.read().split()[0]))
@@ -696,18 +717,18 @@ async function saveEndpoint(){
   var ep = document.getElementById("ep").value;
   var ok = await showConfirm("Endpoint speichern", "Relay-Endpoint setzen und den Agent neu starten?");
   if (!ok){ return; }
-  await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
+  var r = await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
   document.getElementById("ep").value = "";
-  toast("Endpoint gesetzt, Agent neu gestartet");
+  if (r.warning){ toast("WARNUNG: " + r.warning); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
   refreshStatus();
 }
 async function saveToken(){
   var tok = document.getElementById("tok").value;
   var ok = await showConfirm("Token speichern", "Worker-Token setzen und den Agent neu starten?");
   if (!ok){ return; }
-  await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
+  var r = await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
   document.getElementById("tok").value = "";
-  toast("Token gesetzt, Agent neu gestartet");
+  if (r.warning){ toast("WARNUNG: " + r.warning); } else { toast("Token gesetzt, Agent neu gestartet"); }
   refreshStatus();
 }
 async function changePw(){
@@ -1042,18 +1063,23 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(422, {"error": "Token ungültig (8-128 ASCII-Zeichen, ohne Whitespace)"})
                     return
                 write_atomic(TOKEN_FILE, data["token"] + "\n")
-                r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
-                self._send_json(200 if r.returncode == 0 else 500,
-                                {"ok": r.returncode == 0, "restart": r.stdout.strip() or r.stderr.strip() or "ok"})
+                rc, detail = restart_agent()
+                # Schreiben hat geklappt -> 200; Restart-Fehler als warning mit Diagnose (nicht als 500)
+                resp = {"ok": True}
+                if rc != 0:
+                    resp["warning"] = "Token gespeichert, aber Agent-Neustart fehlgeschlagen (rc=%d): %s" % (rc, detail)
+                self._send_json(200, resp)
                 return
             if self.path == "/admin/api/endpoint" and "endpoint" in data:
                 if not validate_endpoint(data["endpoint"]):
                     self._send_json(422, {"error": "Endpoint ungültig (https://-URL, 8-200 ASCII-Zeichen, ohne Whitespace)"})
                     return
                 write_atomic(ENDPOINT_FILE, data["endpoint"] + "\n")
-                r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
-                self._send_json(200 if r.returncode == 0 else 500,
-                                {"ok": r.returncode == 0, "restart": r.stdout.strip() or r.stderr.strip() or "ok"})
+                rc, detail = restart_agent()
+                resp = {"ok": True}
+                if rc != 0:
+                    resp["warning"] = "Endpoint gespeichert, aber Agent-Neustart fehlgeschlagen (rc=%d): %s" % (rc, detail)
+                self._send_json(200, resp)
                 return
             if self.path == "/admin/api/password" and "old" in data and "new" in data:
                 stored = stored_admin_hash()
@@ -1080,8 +1106,14 @@ class Handler(BaseHTTPRequestHandler):
                 if unit not in (AGENT_SERVICE, TTYD_SERVICE):
                     self._send_json(422, {"error": "unit nicht erlaubt"})
                     return
-                r = run(["systemctl", "restart", unit], sudo=True)
-                self._send_json(200 if r.returncode == 0 else 500, {"ok": r.returncode == 0, "unit": unit})
+                try:
+                    r = run(["systemctl", "restart", unit], sudo=True)
+                except Exception as e:
+                    self._send_json(500, {"ok": False, "unit": unit, "detail": str(e)})
+                    return
+                detail = "" if r.returncode == 0 else (r.stderr.strip() or r.stdout.strip())
+                self._send_json(200 if r.returncode == 0 else 500,
+                                {"ok": r.returncode == 0, "unit": unit, "detail": detail})
                 return
             self._send_json(422, {"error": "unbekannter Endpunkt oder Feld"})
         except Exception as e:

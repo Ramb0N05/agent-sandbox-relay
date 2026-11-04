@@ -77,7 +77,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (dreißigste Runde). Install: holt den aktuellen worker-Zweig per
+  (zweiunddreißigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -238,7 +238,15 @@ agent-sandbox-agent.service. Verifikation per state.agent. Worker-Token-
 Datei und Admin-Hash bleiben unberührt; die ttyd-Unit wird nicht mehr
 angefasst (kein ttyd-Passwort mehr - ttyd läuft ohne -c und ist in die
 vmadmin-UI als Terminal-Seite (iframe http://<host>:7681/, CSP frame-src)
-eingebettet, Zugriff nur vom Host via libvirt-NAT ohne DNAT).
+eingebettet). 32. Runde: (a) vm-admin Bounding-Set enthaelt CAP_SETUID/SETGID/
+  CHOWN/DAC_OVERRIDE/FOWNER, damit sudo in der Unit wieder klappt (systemd.exec(5):
+  Bounding-Set begrenzt, was setuid-Kinder wie sudo gewinnen duerfen);
+  (b) ttyd lauscht nur auf 127.0.0.1:7681 mit -b /terminal und ist ausschliesslich
+  ueber den authentifizierten vmadmin-Proxy /terminal/* erreichbar (WS /terminal/ws
+  wird raw durchgereicht; iframe same-origin, CSP frame-src 'self'); (c) PAGES um
+  "terminal" ergaenzt (sonst sprang die Terminal-Seite auf Status) und Seiten ohne
+  Login nicht mehr aufrufbar (nur Login-Seite, Nav versteckt); (d) ttyd-Unit mit
+  Restart=always + StartLimitIntervalSec=0.
 
 Self-Update: vor jedem echten Lauf vergleicht das Skript sha256($0) mit der
 Repo-Kopie unter $RAW_BASE/vm/vm-install.sh (raw.githubusercontent.com liefert

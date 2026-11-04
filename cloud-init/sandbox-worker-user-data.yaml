@@ -328,12 +328,11 @@ write_files:
       TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
       ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
       ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
-      VERSION_FILE = "/etc/vmadmin.version"  # wird von cloud-init (install-script) und run_vm_update geschrieben
-      VERSION_SRC = "0.0.2-dev"  # Quell-Version im Stil x.y.z-<tag>; wird von tools/bump-version.sh (worker) gebumpt
+      VERSION_FILE = "/etc/vmadmin.version"  # einzige Wahrheit zur Laufzeit; wird von cloud-init (install-script) und run_vm_update aus der Repo-VERSION-Datei geschrieben
 
 
       def read_version():
-          # Versionsstand: Datei /etc/vmadmin.version (x.y.z-<tag>), Fallback = VERSION_SRC aus dem Quelltext
+          # Versionsstand: IMMER aus der VERSION-Datei lesen (Repo: VERSION auf worker; in der VM: /etc/vmadmin.version)
           try:
               with open(VERSION_FILE, encoding="utf-8") as f:
                   v = f.read().strip()
@@ -341,7 +340,7 @@ write_files:
                       return v
           except OSError:
               pass
-          return VERSION_SRC
+          return "unbekannt"
 
 
       VERSION = read_version()
@@ -360,7 +359,7 @@ write_files:
       MAX_BODY = 1024 * 1024  # 1 MiB Request-Body-Deckel (sonst 413)
       UPDATE_REPO = "Ramb0N05/agent-sandbox-relay"
       UPDATE_FILES = ["files/agent-sandbox-agent", "files/vmadmin",
-                      "files/agent-sandbox-agent.service", "files/vm-admin.service"]
+                      "files/agent-sandbox-agent.service", "files/vm-admin.service", "VERSION"]
 
       # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
       LOCK_FAILS = 5
@@ -468,13 +467,13 @@ write_files:
           run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
           # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
           # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
-          # Versionsstand automatisiert setzen: VERSION_SRC aus der heruntergeladenen vmadmin-Datei
-          vsrc = VERSION_SRC
+          # Versionsstand automatisiert setzen: Inhalt der Repo-VERSION-Datei (einzige Wahrheit)
+          vsrc = "unbekannt"
           try:
-              with open("/tmp/vm-update/vmadmin", encoding="utf-8") as f:
-                  m2 = re.search(r'^VERSION_SRC = "([^"]+)"', f.read(), re.M)
-              if m2:
-                  vsrc = m2.group(1)
+              with open("/tmp/vm-update/VERSION", encoding="utf-8") as f:
+                  v = f.read().strip()
+                  if v:
+                      vsrc = v
           except OSError:
               pass
           run(["sh", "-c", "printf '%s\\n' '" + vsrc + "' > " + VERSION_FILE], sudo=True)

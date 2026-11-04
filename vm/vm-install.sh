@@ -411,9 +411,10 @@ render_user_data() {
     ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   fi
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
-  # Versionsstand fuer vmadmin: VERSION_SRC aus der in der user-data eingebetteten vmadmin-Datei (6-space indent)
+  # Versionsstand fuer vmadmin: Inhalt der Repo-VERSION-Datei (einzige Wahrheit, worker-Root)
+  fetch_one "VERSION"
   local vsrc
-  vsrc="$(printf '%s\n' "$ud" | sed -n 's/^      VERSION_SRC = "\([^"]*\)".*/\1/p' | head -1)"
+  vsrc="$(tr -d '[:space:]' < "$WORKDIR/VERSION")"
   [ -n "$vsrc" ] || vsrc="0.0.1-dev"
   ud="${ud//__VMADMIN_VERSION__/$vsrc}"  # -> /etc/vmadmin.version per cloud-init runcmd
   case "$ud" in

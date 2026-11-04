@@ -76,18 +76,24 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (fünfundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
+  (sechsundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
   Zeichen, random(4)), legt die VM per virt-install an (identisch zu
   vm/virt-install.sh, zusätzlich --noautoconsole und --console
-  pty,target_type=serial für die serielle Konsole) und wartet über die
-  serielle Konsole (virsh console --force --safe, Autologin worker per
-  agetty --autologin auf serial-getty@ttyS0), bis cloud-init fertig ist
-  (cloud-init status --wait) UND der einmalige power_state-Neustart durch
-  ist (boot_id-Wechsel); erst wenn agent/vm-admin/ttyd aktiv sind, werden
-  die Initialwerte ausgegeben. Image-Pfade kommen aus der libvirt-Konfig
+  pty,target_type=serial für die serielle Konsole), baut eine NoCloud-
+  Seed-ISO (volid cidata + user-data + meta-data, genisoimage/xorriso, nur
+  temporär) und startet virt-install EINPHASIG (--import + Seed als vdb,
+  --events on_reboot=restart,on_poweroff=destroy,on_crash=restart - sonst
+  zerstört libvirt die VM beim power_state-Reboot, weil virt-install bei
+  --cloud-init on_reboot=destroy in die Live-XML schreibt, virtinst
+  installer.py _alter_bootconfig) und wartet über die serielle Konsole
+  (virsh console --force --safe, Autologin worker per agetty --autologin auf
+  serial-getty@ttyS0), bis cloud-init fertig ist (cloud-init status --wait)
+  UND der einmalige power_state-Neustart durch ist (boot_id-Wechsel); erst
+  wenn agent/vm-admin/ttyd aktiv sind, werden die Initialwerte ausgegeben
+  und die Seed-vdb abgehängt (live+config). Image-Pfade kommen aus der libvirt-Konfig
   (virsh pool-dumpxml default -> <target><path>), nicht aus einem
   hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
   KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt
@@ -168,10 +174,20 @@ Installation (VM existiert nicht): fetch der user-data, des Agenten, von
 vmadmin und der Units vom aktuellen worker-Zweig (nur temporär); Ersetzen
 von <agent-sandbox-relay-domain> (nur mit --domain), <ttyd-passwort> und
 <vm-admin-passwort> (sonst generiert aus /dev/urandom, random(4)). Danach
-virt-install (zusätzlich --noautoconsole und --console
-pty,target_type=serial: serielle Konsole auf einem Host-PTY, erreichbar
-per "virsh console NAME" - virt-install(1); Soll-XML in
-vm/domain-xml-target.xml). Die VM bootet serial-getty@ttyS0 mit agetty
+wird die Seed-ISO lokal gebaut (genisoimage -output seed.iso -volid cidata
+-joliet -rock user-data meta-data; NoCloud-Doku: Volume-Label cidata mit
+den Dateien user-data und meta-data) und virt-install gestartet
+(--import + Seed als zweite readonly virtio-Disk vdb, zusätzlich
+--noautoconsole, --console pty,target_type=serial und --events
+on_reboot=restart,on_poweroff=destroy,on_crash=restart; virt-install(1)
+--events, libvirt formatdomain.html on_*; Soll-XML inkl. on_* in
+vm/domain-xml-target.xml). Einphasig, damit Live- == persistente XML ist:
+bei --cloud-init (Zweiphasen-Install) setzt virtinst in der initialen
+Live-XML on_reboot=destroy (virtinst/install/installer.py
+_alter_bootconfig), sodass der power_state-Reboot die VM zerstört hat
+(beobachtet in der 26. Runde). Nach dem Warten wird die Seed-vdb per
+virsh detach-disk --live --config entfernt (die temp-ISO enthält die
+gerenderten Passwörter). Die VM bootet serial-getty@ttyS0 mit agetty
 --autologin worker (user-data), die Konsole loggt also von selbst als
 worker ein (agetty(8) --autologin). Dann wartet das Skript über die
 Konsole: erst `cloud-init status --wait` (blockiert bis cloud-init fertig;

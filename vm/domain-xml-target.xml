@@ -10,6 +10,9 @@
     <vmport state='off'/>
   </features>
   <cpu mode='host-model' check='partial'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
   <devices>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2'/>

@@ -231,7 +231,7 @@ def check_admin(auth_header, peer):
     return None, {}
 
 
-HTML = """<!doctype html>
+HTML = r"""<!doctype html>
 <html lang="de">
 <head>
 <meta charset="utf-8">

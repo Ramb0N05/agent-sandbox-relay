@@ -3,11 +3,21 @@
 # Install (VM does not exist): fetches the current worker-branch files from the public
 # GitHub repo into a temporary directory (mktemp -d, removed via trap on exit - only the
 # VM images persist on the host), replaces the user-data placeholders, generates the
-# initial passwords, renders the user-data, runs virt-install and then WAITS over the
+# initial passwords, renders the user-data, builds a NoCloud seed ISO (volid cidata +
+# user-data + meta-data, genisoimage/xorriso) in the temp dir, runs virt-install in a
+# SINGLE phase (--import + seed disk, no --cloud-init) with
+# --events on_reboot=restart,on_poweroff=destroy,on_crash=restart and then WAITS over the
 # serial console until cloud-init finished AND the first power_state reboot happened;
-# only then the initial values are printed (VM fully ready). --domain is optional: without
-# it the endpoint placeholder stays and the relay endpoint is set after the boot via the
-# vmadmin UI (agent reads the endpoint file first).
+# only then the initial values are printed (VM fully ready) and the seed disk is detached
+# again (live+config). --domain is optional: without it the endpoint placeholder stays
+# and the relay endpoint is set after the boot via the vmadmin UI (agent reads the
+# endpoint file first).
+# Why no --cloud-init: with --cloud-init virt-install is a TWO-phase install
+# (virtinst install/installer.py: requires_postboot_xml_changes() is True when
+# has_cloudinit(), and _alter_bootconfig sets on_reboot="destroy" on the LIVE initial
+# XML; _create_guest starts the live domain with that initial XML). The power_state
+# reboot then destroyed the VM (observed in the 26th round). Single-phase --import keeps
+# live == persistent == final XML with our --events values (virt-install(1) --events).
 # Update (VM exists): exclusively over the VM serial console (virsh console --force
 # --safe, autologin worker via serial-getty@ttyS0 with agetty --autologin, agetty(8));
 # the VM downloads the current files itself from the public repo into /tmp/vm-update
@@ -25,7 +35,12 @@
 # (libvirt group, Arch Wiki), volume creation through the storage pool API (virtinst
 # build_vol_install with backing_store) and the cloud-init seed ISO in the virtinst user
 # scratchdir when /var/lib/libvirt/boot is not writable (make_scratchdir).
-# Sources: virt-install(1) (--noautoconsole, --console pty,target_type=serial),
+# Sources: virt-install(1) (--noautoconsole, --console pty,target_type=serial,
+# --events on_poweroff/on_reboot/on_crash), virtinst install/installer.py
+# (requires_postboot_xml_changes/_alter_bootconfig on_reboot=destroy/_create_guest),
+# libvirt formatdomain.html (on_* lifecycle events), cloud-init NoCloud datasource docs
+# (seed ISO: volume label cidata + files user-data and meta-data, genisoimage -output
+# seed.iso -volid cidata -joliet -rock user-data meta-data),
 # virsh(1) (console [--force] [--safe], pool-dumpxml, net-dhcp-leases network [mac],
 # vol-info/vol-delete vol-name-or-key-or-path, domrename requires an inactive domain),
 # libvirt formatstorage.html (pool <target><path>), libvirt vsh-table.c (lease table
@@ -61,6 +76,7 @@ WORKDIR=""
 VM_USER="worker"
 ORIG_ARGS=()
 CONSOLE_RC=""
+SEED_ISO=""
 
 # repo files fetched to the VM (name in repo); all downloads stay in the temp dir
 
@@ -321,8 +337,14 @@ console_run() {
     printf 'echo "%s=$?"\n' "$marker"
     sleep "$wait_s"
   } | timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
-  CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$out" | tail -1 | cut -d= -f2)"
+  # || true: while the VM is still booting there is no marker yet; without it pipefail
+  # fails the assignment and set -e kills the script silently (bug, 26th round)
+  CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$out" | tail -1 | cut -d= -f2)" || true
   if [ -z "$CONSOLE_RC" ]; then CONSOLE_RC="none"; fi
+}
+
+vm_running() {
+  [ "$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)" = "running" ]
 }
 
 wait_vm_ready() {
@@ -337,8 +359,10 @@ wait_vm_ready() {
   local boot1="" b=""
   info "Warte auf cloud-init (erster Boot) über die serielle Konsole ..."
   while [ $SECONDS -lt $deadline ]; do
+    vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)).
+Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install) - dieses Skript setzt jetzt --events on_reboot=restart (einphasig). Log: journalctl -u libvirtd."
     console_run 'cloud-init status --wait --timeout 300; echo "BOOTID=$(cat /proc/sys/kernel/random/boot_id)"; cloud-init status' 320 >/dev/null
-    b="$(grep -o 'BOOTID=[0-9a-f-]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2)"
+    b="$(grep -o 'BOOTID=[0-9a-f-]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2)" || true
     if grep -q 'status: done' "$WORKDIR/console.out" && [ -n "$b" ]; then boot1="$b"; break; fi
     sleep 10
   done
@@ -347,8 +371,12 @@ wait_vm_ready() {
   local reboot_deadline=$((SECONDS + 900))
   local rebooted=0
   while [ $SECONDS -lt $reboot_deadline ]; do
+    if ! vm_running; then
+      info "VM ist während des power_state-Neustarts ausgegangen - starte neu (virsh start; die persistente XML trägt on_reboot=restart)."
+      virsh_cmd start "$VM_NAME" || die "virsh start fehlgeschlagen"
+    fi
     console_run 'cat /proc/sys/kernel/random/boot_id' 30 >/dev/null
-    b="$(tr -d '[:space:]' < "$WORKDIR/console.out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
+    b="$(tr -d '[:space:]' < "$WORKDIR/console.out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
     if [ -n "$b" ] && [ "$b" != "$boot1" ]; then rebooted=1; break; fi
     sleep 15
   done
@@ -359,6 +387,7 @@ wait_vm_ready() {
   fi
   local ready_deadline=$((SECONDS + 900))
   while [ $SECONDS -lt $ready_deadline ]; do
+    vm_running || die "VM $VM_NAME ist während des Neustarts ausgegangen (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)). Manuell: virsh --connect $LIBVIRT_URI start $VM_NAME"
     console_run 'cloud-init status --wait --timeout 300; systemctl is-active agent-sandbox-agent.service vm-admin.service ttyd-worker.service; systemctl is-system-running; cloud-init status' 320 >/dev/null
     if grep -q 'status: done' "$WORKDIR/console.out" \
        && [ "$(grep -c '^active$' "$WORKDIR/console.out")" -ge 3 ] \
@@ -371,6 +400,34 @@ wait_vm_ready() {
   die "VM nicht einsatzbereit geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
 }
 
+build_seed() {
+  # NoCloud seed ISO built locally in the temp dir: volume label cidata with the files
+  # user-data and meta-data (cloud-init NoCloud datasource docs). It contains the
+  # rendered passwords, so it stays in WORKDIR and is detached after the first boot.
+  printf 'instance-id: iid-%s-01\nlocal-hostname: %s\n' "$VM_NAME" "$VM_NAME" > "$WORKDIR/meta-data"
+  cp "$WORKDIR/user-data.rendered" "$WORKDIR/user-data"
+  chmod 600 "$WORKDIR/user-data" "$WORKDIR/meta-data"
+  chmod 755 "$WORKDIR"   # the qemu process must be able to traverse/read the seed ISO
+  if command -v genisoimage >/dev/null 2>&1; then
+    (cd "$WORKDIR" && genisoimage -quiet -output seed.iso -volid cidata -joliet -rock user-data meta-data)       || die "genisoimage fehlgeschlagen"
+  elif command -v xorriso >/dev/null 2>&1; then
+    (cd "$WORKDIR" && xorriso -as mkisofs -quiet -o seed.iso -volid cidata -joliet -rock user-data meta-data)       || die "xorriso -as mkisofs fehlgeschlagen"
+  else
+    die "kein ISO-Tool gefunden - installieren: pacman -S genisoimage (oder xorriso)"
+  fi
+  chmod 644 "$WORKDIR/seed.iso"
+  SEED_ISO="$WORKDIR/seed.iso"
+}
+
+detach_seed() {
+  # detach the seed disk (vdb) live+config so neither XML references the temp ISO anymore
+  if virsh_cmd detach-disk "$VM_NAME" vdb --live --config >/dev/null 2>&1; then
+    info "Seed-ISO (vdb) abgehängt (live+config) - die temp-Datei wird beim Beenden entfernt."
+  else
+    info "WARNUNG: Seed-ISO (vdb) konnte nicht abgehängt werden - manuell: virsh detach-disk $VM_NAME vdb --live --config"
+  fi
+}
+
 install_vm() {
   render_user_data
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -381,8 +438,8 @@ install_vm() {
     if [ -e "$DISK" ]; then
       info "Hinweis: Overlay existiert bereits: $DISK (echte Anlage bricht hier ab, --recreate für Neu-Anlage)"
     fi
-    info "Dry-Run: würde virt-install starten ($MEM_MIB MiB, $VCPUS vCPUs, Disk $DISK_GB GiB auf $DISK, Backing $BACKING, --console pty,target_type=serial)."
-    info "Dry-Run: danach Warten auf cloud-init + power_state-Neustart über die serielle Konsole, erst dann Initialwerte."
+    info "Dry-Run: würde Seed-ISO bauen (genisoimage/xorriso, volid cidata, user-data+meta-data, nur temporaer) und virt-install starten ($MEM_MIB MiB, $VCPUS vCPUs, Disk $DISK_GB GiB auf $DISK, Backing $BACKING, Seed als vdb, --console pty,target_type=serial, --events on_reboot=restart,on_poweroff=destroy,on_crash=restart, einphasig)."
+    info "Dry-Run: danach Warten auf cloud-init + power_state-Neustart über die serielle Konsole, dann Seed detach, erst dann Initialwerte."
     print_initial_values
     return 0
   fi
@@ -394,10 +451,17 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
   fi
   need_cmd virt-install
   need_cmd timeout
+  build_seed
   # --noautoconsole: no automatic console connect, virt-install returns (virt-install(1))
   # --console pty,target_type=serial: serial console on a host pty, reachable via
   # "virsh console" (virt-install(1)); the guest runs serial-getty@ttyS0 with
   # agetty --autologin worker (user-data), so the console logs in automatically
+  # --events on_reboot=restart,...: virt-install's two-phase install (--cloud-init) sets
+  # on_reboot=destroy on the LIVE xml (virtinst installer.py _alter_bootconfig), which
+  # destroyed the VM at the power_state reboot (26th round). Single-phase --import keeps
+  # live == persistent XML with these events, so the reboot really restarts the VM.
+  # the seed ISO goes in as a second readonly virtio disk (vdb); NoCloud finds it by the
+  # cidata volume label on any block device
   # size+backing_store make virtinst create the volume through the parent storage pool
   # (build_vol_install), so no direct write access to the pool directory is needed
   virt-install \
@@ -409,15 +473,17 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --osinfo archlinux \
     --import \
     --disk "path=$DISK,size=$DISK_GB,format=qcow2,bus=virtio,backing_store=$BACKING" \
+    --disk "path=$SEED_ISO,device=disk,bus=virtio,format=raw,readonly=on" \
     --network network=default,model=virtio \
     --graphics none \
     --console pty,target_type=serial \
+    --events on_reboot=restart,on_poweroff=destroy,on_crash=restart \
     --memballoon none \
     --controller usb,model=none \
-    --cloud-init user-data="$WORKDIR/user-data.rendered",disable=on \
     --noautoconsole
   info "VM angelegt. Warte bis cloud-init fertig ist und der power_state-Neustart durch ist ..."
   wait_vm_ready
+  detach_seed
   info "Warte auf DHCP-Lease (Netzwerk default) ..."
   local ip=""
   local tries=0
@@ -535,7 +601,7 @@ update_vm() {
   # VM-Benutzer prüfen: eine VM der alten Bereitstellung (anderer Benutzer) wird abgewiesen
   console_run 'echo "USER=$(id -un)"' 30 >/dev/null
   local user
-  user="$(grep -oE 'USER=[A-Za-z0-9_.-]+' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)"
+  user="$(grep -oE 'USER=[A-Za-z0-9_.-]+' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)" || true
   if [ "$user" != "$VM_USER" ]; then
     die "In der VM ist Benutzer \"${user:-?}\" eingeloggt, erwartet ist \"$VM_USER\".
 Diese VM traegt noch die alte Bereitstellung (vor der Umbenennung). Neu anlegen:
@@ -547,7 +613,7 @@ Diese VM traegt noch die alte Bereitstellung (vor der Umbenennung). Neu anlegen:
     # then the ENDPOINT constant of the installed agent)
     console_run "ep=\$(cat /home/$VM_USER/.config/agent-sandbox/endpoint 2>/dev/null); [ -z \"\$ep\" ] && ep=\$(grep -o 'ENDPOINT = \"[^\"]*\"' /usr/local/bin/agent-sandbox-agent | head -1 | cut -d'\"' -f2); echo \"EP=\$ep\"" 30 >/dev/null
     local ep
-    ep="$(grep -oE 'EP=https?://[^ ]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)"
+    ep="$(grep -oE 'EP=https?://[^ ]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)" || true
     case "$ep" in
       ""|*"<agent-sandbox-relay-domain>"*) ;;
       *) DOMAIN="$ep"; info "Laufender Relay-Endpoint aus der VM übernommen: $DOMAIN" ;;
@@ -641,6 +707,10 @@ main() {
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     if command -v virsh >/dev/null 2>&1 && vm_exists; then
+      if [ "$RECREATE" -eq 1 ]; then
+        info "Dry-Run: VM $VM_NAME existiert - mit --recreate würde sie verworfen (virsh undefine + Overlay löschen: $DISK) und danach neu angelegt (Install-Pfad)."
+        return 0
+      fi
       info "Dry-Run: VM $VM_NAME existiert - es würde der Update-Pfad über die serielle Konsole laufen (virsh console --force --safe, keine Relay-API)."
       render_agent
       return 0

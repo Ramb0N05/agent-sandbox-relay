@@ -1029,6 +1029,21 @@ write_files:
       document.getElementById("dlg-hist-close").addEventListener("click", function(){ document.getElementById("dlg-hist").close(); });
       document.getElementById("btn-hist-refresh").addEventListener("click", refreshHistory);
       document.getElementById("ttyd-frame").src = "/terminal/";
+      function silenceTtydConsole(){
+        // ttyd-eigenes Client-JS loggt in die Browser-Konsole; das iframe ist same-origin
+        // (/terminal/* wird vom vmadmin-Proxy ausgeliefert) -> Konsole des iframe stummschalten
+        // (MDN Same-Origin-Policy: bei gleicher Origin darf der Parent auf contentWindow zugreifen)
+        try {
+          var cw = document.getElementById("ttyd-frame").contentWindow;
+          if (cw && cw.console){
+            ["log", "info", "warn", "debug", "error"].forEach(function(m){
+              try{ cw.console[m] = function(){}; }catch(e){}
+            });
+          }
+        } catch (e) {}
+      }
+      document.getElementById("ttyd-frame").addEventListener("load", silenceTtydConsole);
+      setTimeout(silenceTtydConsole, 2500);  // ttyd loggt z.B. nach dem WS-Aufbau erneut
       document.getElementById("btn-login").addEventListener("click", doLogin);
       document.getElementById("pw").addEventListener("keydown", function(e){ if (e.key === "Enter"){ doLogin(); } });
       document.getElementById("btn-status-refresh").addEventListener("click", refreshStatus);

@@ -93,9 +93,9 @@ LOG_SINKS=()   # active log files (init_log)
 
 # uniform output design: colors only on a tty; every message also goes to the log sinks
 if [ -t 1 ]; then
-  C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_PHASE=$'\e[1m'; C_OFF=$'\e[0m'
+  C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_PHASE=$'\e[1m'; C_HOT=$'\e[1;31m'; C_OFF=$'\e[0m'
 else
-  C_OK=""; C_WARN=""; C_ERR=""; C_PHASE=""; C_OFF=""
+  C_OK=""; C_WARN=""; C_ERR=""; C_PHASE=""; C_HOT=""; C_OFF=""
 fi
 
 log_line() {
@@ -126,13 +126,18 @@ init_log() {
 
 bar_total=0 bar_done=0 bar_open=0
 bar() {
-  # overall progress bar: bar <done> <total> <label>  (einzeilig mit \r ueberschreiben)
-  local done="$1" total="$2" label="$3" pct filled i
+  # overall progress bar im apt-Stil: bar <done> <total> <label> -> [####>     ]  45%  label
+  # (einzeilig mit \r ueberschreiben; apt: Balkenfuellung = floor(Prozent * Balkenbreite),
+  #  Debian/apt apt-pkg/install-progress.cc: BarDone = floor(Percent * BarSize); '>' als Spitze)
+  local done="$1" total="$2" label="$3" pct filled barstr
   bar_done="$done"; bar_total="$total"
   if [ "$total" -le 0 ]; then return 0; fi
   pct=$((done * 100 / total))
   filled=$((done * 20 / total))
-  printf '\r%s[%s%s] %3d%%  %s%s' "$C_PHASE" "$(printf '#%.0s' $(seq 1 $filled))" "$(printf ' %.0s' $(seq 1 $((20 - filled))))" "$pct" "$label" "$C_OFF"
+  barstr="$(printf '#%.0s' $(seq 1 $filled))"
+  if [ "$filled" -gt 0 ] && [ "$filled" -lt 20 ]; then barstr="${barstr}>"; fi
+  while [ ${#barstr} -lt 20 ]; do barstr="${barstr} "; done
+  printf '\r%s[%s] %3d%%  %s%s' "$C_PHASE" "$barstr" "$pct" "$label" "$C_OFF"
   if [ "$done" -ge "$total" ]; then printf '\n'; bar_open=0; else bar_open=1; fi
   log_line "PROGRESS: $done/$total ($pct%%) $label"
 }
@@ -152,6 +157,7 @@ spin_clear() { printf '\r%80s\r' ""; }
 die() { log_line "FEHLER: $1"; bar_nl; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 info() { bar_nl; printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
 warn() { bar_nl; printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
+hot() { bar_nl; printf '%s%s%s\n' "$C_HOT" "$1" "$C_OFF"; log_line "HOT: $1"; }  # rot+fett fuer zerstoererische Warnungen
 spin_i=0
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "benötigtes Werkzeug fehlt: $1 (pacman -S $1 oder Paket nachtragen)"; }
@@ -441,16 +447,18 @@ wait_vm_ready_api() {
       IFS=$'\t' read -r boot_first up_first <<< "$tsv"
       break
     fi
-    sleep 5
+    sleep 3
   done
   [ -n "$boot_first" ] || return 1
-  info "vmadmin-API erreichbar (boot_id $boot_first, uptime ${up_first}s). Warte auf cloud-init done + power_state-Neustart + aktive Units ..."
-  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 120)) last_status="" status_line="" 
+  log_line "INFO: erste API-Antwort: boot_id=$boot_first uptime=${up_first}s"
+  info "vmadmin-API erreichbar (uptime ${up_first}s). Warte auf cloud-init done + power_state-Neustart + aktive Units ..."
+  local rebooted=0 ready=0 polls=0 fails=0 grace_s=60 grace=$((SECONDS + 60)) last_status="" status_line=""
   local bid="" up="" ci="" u_agent="" u_vm="" u_ttyd="" sysr=""
   while [ $SECONDS -lt $deadline ]; do
     vm_running || return 1
     st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
     if [ -n "$st" ]; then
+      fails=0
       tsv="$(printf '%s' "$st" | jq -r '[.boot_id // "", (.uptime_s|tostring), (.cloud_init // ""), (.agent // ""), (.vm_admin // ""), (.ttyd // ""), (.system_running // "")] | @tsv')" || true
       IFS=$'\t' read -r bid up ci u_agent u_vm u_ttyd sysr <<< "$tsv"
       if [ -n "$bid" ] && [ "$bid" != "$boot_first" ]; then rebooted=1; fi
@@ -462,26 +470,35 @@ wait_vm_ready_api() {
         ready=1
       fi
       if [ "$rebooted" -eq 1 ] && [ "$ready" -eq 1 ]; then
-        info "VM nach dem power_state-Neustart einsatzbereit (boot_id $bid, cloud-init done, agent/vm-admin/ttyd aktiv)."
+        log_line "INFO: einsatzbereit: boot_id=$bid cloud_init=$ci agent=$u_agent vm_admin=$u_vm ttyd=$u_ttyd system=$sysr"
+        info "VM nach dem power_state-Neustart einsatzbereit (cloud-init done, agent/vm-admin/ttyd aktiv)."
         return 0
       fi
       # safety net: if the reboot already happened before the first API answer, no
       # boot_id change will ever come - but the API says ready; accept after grace
       if [ "$rebooted" -eq 0 ] && [ "$ready" -eq 1 ] && [ "$SECONDS" -gt "$grace" ]; then
-        info "WARNUNG: kein boot_id-Wechsel erkannt, aber API meldet ready seit >240 s - Neustart war vermutlich schon vor dem ersten API-Poll passiert; fahre fort."
+        info "WARNUNG: kein boot_id-Wechsel erkannt, aber API meldet ready seit >${grace_s} s - Neustart war vermutlich schon vor dem ersten API-Poll passiert; fahre fort."
         return 0
+      fi
+    else
+      # API nicht erreichbar: beim power_state-Reboot faellt vm-admin kurz aus -
+      # 2 aufeinanderfolgende Fehlschlaege = Neustart laeuft -> rebooted frueh erkennen
+      fails=$((fails + 1))
+      if [ "$fails" -ge 2 ] && [ "$rebooted" -eq 0 ]; then
+        rebooted=1
+        log_line "INFO: API 2x hintereinander nicht erreichbar - power_state-Neustart erkannt (fails=$fails)"
       fi
     fi
     polls=$((polls + 1))
     status_line="boot_id=${bid:-?} uptime=${up:-?}s cloud_init=${ci:-?} agent=${u_agent:-?} vm_admin=${u_vm:-?} ttyd=${u_ttyd:-?} system=${sysr:-?} rebooted=$rebooted ready=$ready"
-    # Terminal nur Indikator; Details ins Log (34th round)
+    # Terminal nur Indikator; Details (boot_id etc.) ins Log (34./38. Runde)
     spin_tick "Warte auf VM-Status (Poll $polls, rebooted=$rebooted ready=$ready)"
     if [ "$status_line" != "$last_status" ]; then
       spin_clear
       log_line "INFO: Poll $polls: $status_line"
       last_status="$status_line"
     fi
-    sleep 5
+    sleep 2
   done
   spin_clear
   return 1
@@ -568,7 +585,7 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --controller usb,model=none \
     --noautoconsole
   bar 4 6 "Warte auf cloud-init + Reboot + Bereitschaft (vmadmin-API)"
-  info "VM angelegt. Warte auf Einsatzbereitschaft über die vmadmin-API (keine serielle Konsole) ..."
+  info "VM angelegt. Warte auf Einsatzbereitschaft über die vmadmin-API ..."
   wait_vm_ready_api || die "vmadmin-API meldet nicht einsatzbereit (Timeout). Debug: vmadmin-UI http://<ip>/admin (Login admin), ttyd-Terminal, virsh console $VM_NAME (manuell)."
   spin_clear
   detach_seed
@@ -738,13 +755,13 @@ Das vmadmin-Passwort steht in der Initialwerte-Ausgabe der Anlage oder laesst si
   log_line "INFO: Update fertig, agent=$agent_state. Dateien lagen nur in /tmp/vm-update (VM, temporaer)."
 }
 confirm_recreate() {
-  info "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-  info "! --recreate LÖSCHT ALLE DATEN DER VM (Overlay wird gelöscht)!"
-  info "! Betroffen: $DISK"
-  info "! Alles in der VM (Dateien, Jobs-Results, Konfiguration) ist weg."
-  info "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-  # VMM-Hinweis VOR der Weiter?-Abfrage (sonst sieht man ihn erst nach dem Ja)
+  # VMM-Hinweis ganz zuerst, dann die recreate-Warnung rot+fett, dann die Abfrage
   warn "Falls die VM in virt-manager geöffnet ist: bitte das VM-Fenster JETZT schliessen - beim Destroy/Undefine mit offenem Fenster kann das virt-manager-GUI einfrieren (bekannte Upstream-Bugs)."
+  hot "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  hot "! --recreate LÖSCHT ALLE DATEN DER VM (Overlay wird gelöscht)!"
+  hot "! Betroffen: $DISK"
+  hot "! Alles in der VM (Dateien, Jobs-Results, Konfiguration) ist weg."
+  hot "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   [ "$ASSUME_YES" -eq 1 ] && return 0
   local answer
   printf 'Weiter? Wort "ja" eingeben: '

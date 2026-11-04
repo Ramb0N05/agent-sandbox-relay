@@ -434,7 +434,8 @@ dialog h3{margin:0 0 .6rem;color:var(--acc2)}
 dialog p{margin:.2rem 0 .8rem}
 .dlgrow{display:flex;gap:.6rem;justify-content:flex-end;margin-top:1rem}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:1.4rem;background:var(--panel2);
-  border:1px solid var(--acc);border-radius:8px;padding:.5rem 1rem;opacity:0;transition:opacity .3s;z-index:9}
+  border:1px solid var(--acc);border-radius:8px;padding:.5rem 1rem;opacity:0;transition:opacity .3s;z-index:9;
+  max-width:90vw;max-height:40vh;overflow-y:auto;white-space:pre-wrap;text-align:left}
 .toast.show{opacity:1}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;
   overflow-x:auto;font-size:.82rem;max-height:420px;overflow-y:auto}
@@ -602,16 +603,17 @@ async function api(path, opts){
   var r = await fetch(path, opts);
   if (r.status === 401){ showLogin("Login fehlgeschlagen"); throw new Error("401"); }
   if (r.status === 429){ showLogin("Gesperrt: zu viele Fehlversuche (Retry-After " + r.headers.get("Retry-After") + " s)"); throw new Error("429"); }
-  if (r.status === 503){ toast("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)"); throw new Error("503"); }
-  if (!r.ok){ var t = await r.text(); toast("Fehler " + r.status + ": " + t.slice(0, 200)); throw new Error(String(r.status)); }
+  if (r.status === 503){ toast("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)", 30000); throw new Error("503"); }
+  if (!r.ok){ var t = await r.text(); toast("Fehler " + r.status + ": " + t.slice(0, 1000), 30000); throw new Error(String(r.status)); }
   return r.json();
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
-function toast(msg){
+function toast(msg, ms){
+  // ms optional; Fehler/Warnungen bekommen 30 s (kopierbar), Infos bleiben kurz
   var t = document.getElementById("toast");
   t.textContent = msg;
   t.classList.add("show");
-  setTimeout(function(){ t.classList.remove("show"); }, 2600);
+  setTimeout(function(){ t.classList.remove("show"); }, ms || 2600);
 }
 function fmtBytes(n){
   if (n === null || n === undefined){ return "-"; }
@@ -721,7 +723,7 @@ async function saveEndpoint(){
   if (!ok){ return; }
   var r = await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
   document.getElementById("ep").value = "";
-  if (r.warning){ toast("WARNUNG: " + r.warning); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
+  if (r.warning){ toast("WARNUNG: " + r.warning, 30000); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
   refreshStatus();
 }
 async function saveToken(){
@@ -730,7 +732,7 @@ async function saveToken(){
   if (!ok){ return; }
   var r = await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
   document.getElementById("tok").value = "";
-  if (r.warning){ toast("WARNUNG: " + r.warning); } else { toast("Token gesetzt, Agent neu gestartet"); }
+  if (r.warning){ toast("WARNUNG: " + r.warning, 30000); } else { toast("Token gesetzt, Agent neu gestartet"); }
   refreshStatus();
 }
 async function changePw(){

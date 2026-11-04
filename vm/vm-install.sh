@@ -13,7 +13,7 @@
 # socket (libvirt group membership, Arch Wiki), volume creation goes through the
 # libvirt storage pool API (virtinst build_vol_install with backing_store) and the
 # cloud-init seed ISO is built in the virtinst user scratchdir when /var/lib/libvirt/boot
-# is not writable (installertreemedia.py make_scratchdir).
+# is not writable (virtinst/install/installertreemedia.py make_scratchdir).
 # Standard paths by default: overlay and backing image in the libvirt default pool
 # directory (/var/lib/libvirt/images, virtinst _preferred_default_pool_path); project
 # paths appear only when passed explicitly as parameters.

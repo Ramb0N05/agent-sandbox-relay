@@ -15,8 +15,8 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   cc_ssh-Modul (leere Liste statt Default rsa/ecdsa/ed25519), runcmd
   deinstalliert openssh per pacman -Rns --noconfirm und löscht die
   generierten Host-Keys (das cloud-init packages-Modul kann nur
-  installieren, keine Pakete entfernen). Auf dem Host
-  unter /root/sandbox-worker-user-data.yaml ablegen; virt-install hängt sie
+  installieren, keine Pakete entfernen). vm/vm-install.sh rendert sie
+  beim Anlegen nur temporär (Abschnitt unten); virt-install hängt sie
   als NoCloud-ISO nur beim ersten Boot an.
 - files/agent-sandbox-agent: Pull-Agent (elfte Runde: Python statt bash;
   Long-Poll gegen die Queue mit persistenter HTTP-Verbindung und einem
@@ -134,15 +134,15 @@ Wiki "Libvirt"); das Overlay wird über die Storage-Pool-API angelegt
 (virtinst build_vol_install mit backing_store, die Datei erzeugt libvirtd
 im Pool), das Cloud-init-Seed-ISO baut virt-install bei fehlendem
 Schreibzugriff auf /var/lib/libvirt/boot im eigenen Nutzer-Cache
-(virtinst installertreemedia.py make_scratchdir, Mode 0751). Custom-Pfade
-für --disk: das Verzeichnis muss ein bekannter libvirt-Storage-Pool sein
-oder das Overlay muss existieren (virt-install legt Volumes nur über
-Pools an). Overlay-Löschung bei --recreate über virsh vol-delete
-(vol-name-or-key-or-path, klappt ohne Root), mit rm als Fallback. Custom-Pfade für --disk: unbekannte
-Verzeichnisse verwaltet virt-install als automatisch angelegten dir-Pool
-(diskbackend.py manage_path: "If path is not managed, try to create a
-storage pool to probe the path"); Volumes entstehen immer über die
-Storage-Pool-API.
+(virtinst/install/installertreemedia.py make_scratchdir, Mode 0751).
+Custom-Pfade für --disk: unbekannte Verzeichnisse verwaltet virt-install
+als automatisch angelegten dir-Pool (diskbackend.py manage_path: "If
+path is not managed, try to create a storage pool to probe the path");
+Volumes entstehen immer über die Storage-Pool-API (cli.py: pool+size+
+backing_store -> DeviceDisk.build_vol_install, "Handles storage creation
+via libvirt APIs", diskbackend.py). Overlay-Löschung bei --recreate über
+virsh vol-delete (vol-name-or-key-or-path, klappt ohne Root), mit rm
+als Fallback.
 
 Installation (VM existiert nicht): fetch der user-data, des Agenten, von
 vmadmin und der Units vom aktuellen worker-Zweig; Ersetzen von

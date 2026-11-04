@@ -183,8 +183,8 @@ def usage_data():
             "GET /admin/api/usage": "diese Dokumentation mit der Admin-Session (HTTP Basic) statt Bearer-Token",
         },
         "dateitransfer": {
-            "datei_in_die_vm": "1) POST /files mit Rohbytes -> id; 2) Job cmd 'VIBE_FETCH <id> <zielpfad>'",
-            "datei_aus_der_vm": "Job cmd 'VIBE_SEND <pfad>' -> Result enthält 'VIBE_SEND id=<id>'; dann GET /files/<id>",
+            "datei_in_die_vm": "1) POST /files mit Rohbytes -> id; 2) Job cmd 'FETCH <id> <zielpfad>'",
+            "datei_aus_der_vm": "Job cmd 'SEND <pfad>' -> Result enthält 'SEND id=<id>'; dann GET /files/<id>",
             "fallback": "Job cmd 'base64 -w0 <datei>' (Base64-Text im Result, ohne Datei-Endpunkte)",
         },
         "beispiele": [

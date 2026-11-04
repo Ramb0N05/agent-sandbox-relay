@@ -367,18 +367,23 @@ proxy-Netzwerk erreicht ihn), der Header kann also nur von Traefik
 stammen - zusammen mit strip-xfcc ist ein Vortäuschen ausgeschlossen.
 Ohne AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256 bleibt alles beim Basic-Login.
 
-## Versionierung (39. Runde)
+## Versionierung (40. Runde: harmonisiert, Stil x.y.z-<tag>, unabhaengige Versionen)
 
-- Der Relay liest seinen Versionsstand beim Start aus `relay/VERSION` (voller
-  main-Commit-SHA; Fallback `0.0.1-dev`) und liefert ihn in `GET /admin/api/state`
-  als `version`; die Admin-UI zeigt ihn unter der „angemeldet“-Info
-  (`angemeldet als admin · v<sha>`). Nach jedem Push auf main:
-  `tools/bump-version.sh && git add relay/VERSION && git commit -m "version bump" && git push origin main`
-  (Portainer baut aus der Git-URL am HEAD, ohne Build-Args - die Datei im Baum ist
-  die verlässliche Quelle). Verifikation nach dem Webhook-Deploy: `GET /admin` zeigt
-  `<title>sandbox-relay Verwaltung</title>`; der laufende Stand steht in
-  `/admin/api/state` (Login nötig).
-- Die VM-Seite (vmadmin) versioniert separat: `/etc/vmadmin.version`
-  (`worker-<sha7>`), geschrieben von cloud-init beim Erstboot (install-script
-  ersetzt `__VMADMIN_VERSION__` in der user-data beim Rendern) und von
-  `run_vm_update` bei jedem Update; Anzeige unter der „angemeldet“-Info in vmadmin.
+Beide Komponenten nutzen denselben Stil `x.y.z-<tag>` (Start jeweils `0.0.1-dev`),
+aber **unabhaengige** Versionen:
+
+- relayadmin (main): `relay/VERSION` (z. B. `0.0.1-dev`). Der Relay liest die Datei
+  beim Start (`config.version()`, Fallback `0.0.1-dev`), liefert sie in
+  `GET /admin/api/state` als `version`, die Admin-UI zeigt sie unter der
+  „angemeldet“-Info (`angemeldet als admin · v0.0.1-dev`). Automatisierter Bump nach
+  jedem Push auf main:
+  `tools/bump-version.sh [patch|minor|major] && git add relay/VERSION && git commit -m "version bump (relay)" && git push origin main`
+  (Default patch, Tag nach `-` bleibt erhalten: 0.0.1-dev -> 0.0.2-dev).
+- vmadmin (worker): `VERSION_SRC = "0.0.1-dev"` in `files/vmadmin` (Fallback, wenn
+  `/etc/vmadmin.version` fehlt). Automatisierter Bump nach jedem Push auf worker:
+  `tools/bump-version.sh [patch|minor|major]` bumpt die Konstante in `files/vmadmin`.
+  Laufzeit: `/etc/vmadmin.version` wird von cloud-init beim Erstboot geschrieben
+  (install-script ersetzt `__VMADMIN_VERSION__` in der user-data durch die
+  `VERSION_SRC` der eingebetteten vmadmin) und von `run_vm_update` bei jedem Update
+  (extract aus der heruntergeladenen vmadmin-Datei). Anzeige unter der
+  „angemeldet“-Info in vmadmin (`angemeldet (admin) · v0.0.1-dev`).

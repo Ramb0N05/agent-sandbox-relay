@@ -195,7 +195,12 @@ def poll_once(relay):
     j = relay.next_job()
     if j is None:
         return None
-    rc, out = execute(j["cmd"], relay)
+    try:
+        rc, out = execute(j["cmd"], relay)
+    except Exception as e:
+        # 46th round: Exception in FETCH/SEND darf den Job nicht ewig 'running' lassen
+        # (result wird immer gepostet; 900-s-Cap greift nur bei run_cmd)
+        rc, out = 1, "agent-fehler: %s" % e
     relay.post_result(j["id"], out, rc)
     cmd = j.get("cmd") or ""
     parts = cmd.split()

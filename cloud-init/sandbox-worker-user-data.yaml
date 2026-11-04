@@ -943,6 +943,12 @@ write_files:
         while (v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
         return (i ? v.toFixed(1) : v) + " " + u[i];
       }
+      function fmtTs(ts){
+        // Verlauf-Zeitstempel: unix-Sekunden (agent log_history: time.time()) -> lokal lesbar
+        // (wie relayadmin: toLocaleString, Quelle MDN Date/toLocaleString - Canvas 15. Runde)
+        var d = new Date(ts * 1000);
+        return isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+      }
       function fmtUptime(s){
         var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
         return (d ? d + " d " : "") + h + " h " + m + " min";

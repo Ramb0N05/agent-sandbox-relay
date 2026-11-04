@@ -72,7 +72,6 @@ MEM_MIB="8192"
 VCPUS="4"
 USER_DATA=""
 RAW_BASE="https://raw.githubusercontent.com/Ramb0N05/agent-sandbox-relay/worker"
-RAW_SHA_SHORT="unbekannt"  # wird von resolve_raw_base auf die ersten 7 Zeichen des Commit-SHA gesetzt
 DOMAIN=""
 WORKER_TOKEN=""
 ADMIN_PW=""
@@ -382,7 +381,6 @@ resolve_raw_base() {
     head_sha="$(curl -fsSL "https://api.github.com/repos/$repo_slug/commits/$ref" 2>/dev/null | grep -oE '"sha": *"[0-9a-f]{40}"' | head -1 | grep -oE '[0-9a-f]{40}')" || true
     if [ -n "$head_sha" ]; then
       RAW_BASE="https://raw.githubusercontent.com/$repo_slug/$head_sha"
-      RAW_SHA_SHORT="${head_sha:0:7}"
       log_line "INFO: Repo-HEAD $ref -> Commit $head_sha (immutable raw-URL, kein CDN-Cache)."
     fi
   fi
@@ -413,7 +411,11 @@ render_user_data() {
     ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   fi
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
-  ud="${ud//__VMADMIN_VERSION__/worker-$RAW_SHA_SHORT}"  # Versionsstand fuer vmadmin (/etc/vmadmin.version)
+  # Versionsstand fuer vmadmin: VERSION_SRC aus der in der user-data eingebetteten vmadmin-Datei (6-space indent)
+  local vsrc
+  vsrc="$(printf '%s\n' "$ud" | sed -n 's/^      VERSION_SRC = "\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$vsrc" ] || vsrc="0.0.1-dev"
+  ud="${ud//__VMADMIN_VERSION__/$vsrc}"  # -> /etc/vmadmin.version per cloud-init runcmd
   case "$ud" in
     *"<vm-admin-passwort>"*|*"<ttyd-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;

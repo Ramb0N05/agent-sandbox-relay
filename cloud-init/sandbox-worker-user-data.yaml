@@ -329,10 +329,11 @@ write_files:
       ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
       ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
       VERSION_FILE = "/etc/vmadmin.version"  # wird von cloud-init (install-script) und run_vm_update geschrieben
+      VERSION_SRC = "0.0.1-dev"  # Quell-Version im Stil x.y.z-<tag>; wird von tools/bump-version.sh (worker) gebumpt
 
 
       def read_version():
-          # Versionsstand: Datei /etc/vmadmin.version ("worker-<sha7>"), Fallback dev
+          # Versionsstand: Datei /etc/vmadmin.version (x.y.z-<tag>), Fallback = VERSION_SRC aus dem Quelltext
           try:
               with open(VERSION_FILE, encoding="utf-8") as f:
                   v = f.read().strip()
@@ -340,7 +341,7 @@ write_files:
                       return v
           except OSError:
               pass
-          return "0.0.1-dev"
+          return VERSION_SRC
 
 
       VERSION = read_version()
@@ -467,11 +468,18 @@ write_files:
           run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
           # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
           # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
-          # Versionsstand automatisiert setzen: worker-<sha7> des Commits, von dem geladen wurde
-          sha_short = (m.group(1) if m else "unknown")[:7]
-          run(["sh", "-c", "printf 'worker-%s\\n' > %s" % (sha_short, VERSION_FILE)], sudo=True)
+          # Versionsstand automatisiert setzen: VERSION_SRC aus der heruntergeladenen vmadmin-Datei
+          vsrc = VERSION_SRC
+          try:
+              with open("/tmp/vm-update/vmadmin", encoding="utf-8") as f:
+                  m2 = re.search(r'^VERSION_SRC = "([^"]+)"', f.read(), re.M)
+              if m2:
+                  vsrc = m2.group(1)
+          except OSError:
+              pass
+          run(["sh", "-c", "printf '%s\\n' '" + vsrc + "' > " + VERSION_FILE], sudo=True)
           run(["systemd-run", "--on-active=2s", "systemctl", "restart", "vm-admin.service"], sudo=True)
-          return True, "ok (base %s, version worker-%s)" % (base, sha_short)
+          return True, "ok (base %s, version %s)" % (base, vsrc)
 
 
       def run(cmd_argv, sudo=False):

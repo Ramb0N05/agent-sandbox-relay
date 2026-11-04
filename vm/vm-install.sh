@@ -263,6 +263,21 @@ fetch_repo_files() {
   # all downloads stay in the temp dir (mktemp -d, removed by the EXIT trap);
   # only the VM images persist on the host
   need_cmd curl
+  # resolve the branch HEAD to a commit SHA first: raw.githubusercontent.com caches
+  # branch refs at the edge, so right after a push the branch URL can still serve the
+  # OLD content (observed 31st round); commit-SHA raw URLs are immutable. GitHub REST
+  # commits API (docs.github.com/en/rest/commits) for a public repo needs no auth.
+  local repo_slug ref head_sha
+  repo_slug="${RAW_BASE#https://raw.githubusercontent.com/}"
+  repo_slug="${repo_slug%/*}"
+  ref="${RAW_BASE##*/}"
+  if [ "$ref" != "$RAW_BASE" ] && [ -n "$repo_slug" ]; then
+    head_sha="$(curl -fsSL "https://api.github.com/repos/$repo_slug/commits/$ref" 2>/dev/null | grep -oE '"sha": *"[0-9a-f]{40}"' | head -1 | grep -oE '[0-9a-f]{40}')" || true
+    if [ -n "$head_sha" ]; then
+      RAW_BASE="https://raw.githubusercontent.com/$repo_slug/$head_sha"
+      info "Repo-HEAD $ref -> Commit $head_sha (immutable raw-URL, kein CDN-Cache)."
+    fi
+  fi
   WORKDIR="$(mktemp -d)"
   trap 'rm -rf "$WORKDIR"' EXIT
   # current worker-branch HEAD via raw.githubusercontent (repo is public)

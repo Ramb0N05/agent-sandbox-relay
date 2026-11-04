@@ -77,7 +77,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (dreiunddreißigste Runde). Install: holt den aktuellen worker-Zweig per
+  (vierunddreißigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -254,7 +254,17 @@ eingebettet). 32. Runde: (a) vm-admin Bounding-Set enthaelt CAP_SETUID/SETGID/
   Update setzt bei --domain den Endpoint per POST /admin/api/endpoint; Agent
   meldet den Endpoint-Platzhalter Klartext statt [Errno -2]; vmadmin hat
   Session-Cookie-Login (POST /admin/api/login), damit das /terminal-iframe
-  ohne Authorization-Header authentifiziert ist.
+  ohne Authorization-Header authentifiziert ist. 34. Runde: Dateien werden nur
+  bei Bedarf geladen (fetch_one statt Pauschal-Download); Update stoesst nur ein
+  kleines JSON an POST /admin/api/update an - die komplette Routine laeuft in der VM
+  (vmadmin run_vm_update: Holt die Dateien selbst aus dem Repo via raw@<sha>,
+  Platzhalter-Ersetzung, sudo install, daemon-reload, Agent-Restart, vm-admin-Restart
+  DETACHED per systemd-run --on-active, damit die HTTP-Antwort nicht abbricht -
+  sonst curl (52) Empty reply); --admin-password ist Pflicht fuer den Update-Pfad;
+  Fortschrittsbalken + Spinner (Poll-Details nur ins Log); reboot-Wait grace 120 s;
+  --recreate weist auf virt-manager-Fenster hin (Freeze); Agent loggt Verlauf
+  (Jobs+Dateien mit Submitter) nach ~/.config/agent-sandbox/history.jsonl, vmadmin
+  zeigt ihn als Seite Verlauf an.
 
 Self-Update: vor jedem echten Lauf vergleicht das Skript sha256($0) mit der
 Repo-Kopie unter $RAW_BASE/vm/vm-install.sh (raw.githubusercontent.com liefert

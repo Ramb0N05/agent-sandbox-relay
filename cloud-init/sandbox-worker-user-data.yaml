@@ -329,7 +329,7 @@ write_files:
       ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
       ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
       VERSION_FILE = "/etc/vmadmin.version"  # wird von cloud-init (install-script) und run_vm_update geschrieben
-      VERSION_SRC = "0.0.1-dev"  # Quell-Version im Stil x.y.z-<tag>; wird von tools/bump-version.sh (worker) gebumpt
+      VERSION_SRC = "0.0.2-dev"  # Quell-Version im Stil x.y.z-<tag>; wird von tools/bump-version.sh (worker) gebumpt
 
 
       def read_version():

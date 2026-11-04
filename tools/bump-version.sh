@@ -18,4 +18,7 @@ case "$bump" in
 esac
 newv="$x.$y.$z-$tag"
 sed -i "s/^VERSION_SRC = \".*\"/VERSION_SRC = \"$newv\"/" files/vmadmin
-echo "vmadmin VERSION_SRC = $newv"
+# eingebettete Kopie in der cloud-init gleich mitbumpen (6-space indent, t20-Sync)
+sed -i "s/^      VERSION_SRC = \".*\"/      VERSION_SRC = \"$newv\"/" cloud-init/sandbox-worker-user-data.yaml
+grep -q "^      VERSION_SRC = \"$newv\"" cloud-init/sandbox-worker-user-data.yaml || { echo "user-data-Einbettung nicht gebumpt" >&2; exit 1; }
+echo "vmadmin VERSION_SRC = $newv (files/vmadmin + user-data)"

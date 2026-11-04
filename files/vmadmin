@@ -61,7 +61,8 @@ HISTORY_SHOWN = 200
 MAX_BODY = 1024 * 1024  # 1 MiB Request-Body-Deckel (sonst 413)
 UPDATE_REPO = "Ramb0N05/agent-sandbox-relay"
 UPDATE_FILES = ["files/agent-sandbox-agent", "files/vmadmin",
-                "files/agent-sandbox-agent.service", "files/vm-admin.service", "VERSION"]
+                "files/agent-sandbox-agent.service", "files/vm-admin.service",
+                "files/ttyd-worker.service", "cloud-init/sandbox-worker-user-data.yaml", "VERSION"]
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -129,12 +130,39 @@ def _http_get(url):
     return r.stdout if r.returncode == 0 else None
 
 
+def _apply_user_data_extras(ud_path):
+    # 47th round: komplette VM-Umgebung wie nach frischem cloud-init nachziehen,
+    # soweit idempotent: packages aus dem user-data packages:-Block nachinstallieren
+    # und die /etc/profile.d-Alias-Zeile erneut anwenden. ssh-Entfernung, growpart und
+    # serial-getty liefen bereits bei der Erstprovision und bleiben unangetastet.
+    # Die Konfiguration (~/.config/agent-sandbox: Token, Endpoint, Admin-Hash) bleibt erhalten.
+    try:
+        ud = open(ud_path, encoding="utf-8").read()
+    except OSError:
+        return
+    pkgs = []
+    m = re.search(r"^packages:\n((?:  - .*\n?)+)", ud, re.M)
+    if m:
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                pkg = line[2:].split("#")[0].strip()
+                if pkg:
+                    pkgs.append(pkg)
+    if pkgs:
+        run(["pacman", "-S", "--noconfirm", "--needed"] + pkgs, sudo=True)
+    for line in ud.splitlines():
+        ls = line.strip()
+        if ls.startswith("- ") and "lrzsz-alias.sh" in ls:
+            run(["sh", "-c", ls[2:].split("#")[0].strip()], sudo=True)
+
+
 def run_vm_update(domain=None):
-    # Update laeuft vollstaendig in der VM: Dateien vom oeffentlichen Repo holen
-    # (Branch-HEAD -> Commit-SHA, raw@<sha> ist immutable; Branch-Refs sind am CDN
-    # gecacht), Agent-Platzhalter bei domain ersetzen, sudo install, daemon-reload,
-    # Agent-Restart; vm-admin-Restart wird DETACHED (systemd-run --on-active) geplant,
-    # damit die HTTP-Antwort nicht abbricht (sonst curl (52) Empty reply).
+    # Update laeuft vollstaendig in der VM: ALLE Worker-Dateien + VERSION + user-data vom
+    # oeffentlichen Repo holen (Branch-HEAD -> Commit-SHA, raw@<sha> ist immutable),
+    # installieren, Pakete/Config-Extras nachziehen, daemon-reload, agent + ttyd restarten;
+    # vm-admin-Restart DETACHED (systemd-run --on-active), sonst curl (52) Empty reply.
+    # Endzustand wie nach --recreate, nur ~/.config/agent-sandbox (Token/Endpoint/Passwort) bleibt.
     sha = _http_get("https://api.github.com/repos/%s/commits/worker" % UPDATE_REPO)
     m = re.search(r'"sha":\s*"([0-9a-f]{40})"', sha or "")
     base = "https://raw.githubusercontent.com/%s/%s" % (UPDATE_REPO, m.group(1) if m else "worker")
@@ -160,15 +188,14 @@ def run_vm_update(domain=None):
         ("/tmp/vm-update/vmadmin", "/usr/local/bin/vmadmin", "worker", "0700"),
         ("/tmp/vm-update/agent-sandbox-agent.service", "/etc/systemd/system/agent-sandbox-agent.service", "root", "0644"),
         ("/tmp/vm-update/vm-admin.service", "/etc/systemd/system/vm-admin.service", "root", "0644"),
+        ("/tmp/vm-update/ttyd-worker.service", "/etc/systemd/system/ttyd-worker.service", "root", "0644"),
     ]
     for src, target, owner, mode in installs:
         r = run(["install", "-o", owner, "-g", owner, "-m", mode, src, target], sudo=True)
         if r.returncode != 0:
             return False, "install %s fehlgeschlagen: %s" % (target, r.stderr.strip())
+    _apply_user_data_extras("/tmp/vm-update/sandbox-worker-user-data.yaml")
     run(["systemctl", "daemon-reload"], sudo=True)
-    run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
-    # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
-    # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
     # Self-Heal (44. Runde): CONF_DIR muss worker gehoeren, sonst write_atomic -> Permission denied
     run(["chown", "-R", "worker:worker", CONF_DIR], sudo=True)
     run(["chmod", "700", CONF_DIR], sudo=True)
@@ -182,6 +209,8 @@ def run_vm_update(domain=None):
     except OSError:
         pass
     run(["sh", "-c", "printf '%s\\n' '" + vsrc + "' > " + VERSION_FILE], sudo=True)
+    run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
+    run(["systemctl", "restart", TTYD_SERVICE], sudo=True)
     run(["systemd-run", "--on-active=2s", "systemctl", "restart", "vm-admin.service"], sudo=True)
     return True, "ok (base %s, version %s)" % (base, vsrc)
 
@@ -384,6 +413,7 @@ HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sandbox-worker Verwaltung</title>
+  <link rel="icon" href="data:,">  <!-- leeres Icon: kein favicon-Request -> kein 404 in der Konsole (MDN link rel=icon) -->
 <style>
 :root{
   --bg:#0f1216;--panel:#171b21;--panel2:#1d222a;--line:#2a313b;--text:#e6e9ee;
@@ -512,7 +542,6 @@ label.field input{width:100%}
     <p class="muted" id="ep-cur">aktuelles Endpoint: -</p>
     <label class="field">Neues Relay-Endpoint (https://...)
       <input id="ep" type="text" placeholder="https://..." autocomplete="off"></label>
-    <div class="row"><button class="primary" id="btn-ep">Endpoint speichern (Agent startet neu)</button></div>
     <p class="muted">Ohne diese Karte bleibt der Platzhalter aus der cloud-init-Konfiguration aktiv. Der Agent liest das Endpoint nur beim Start, deshalb der Neustart.</p>
   </div>
   <h2>Worker-Token <span class="muted">(Relay-Anmeldung des Agenten)</span></h2>
@@ -520,19 +549,22 @@ label.field input{width:100%}
     <p class="muted" id="token-mask">aktuelles Token: -</p>
     <label class="field">Neues Worker-Token (aus der Relay-Verwaltung kopieren)
       <input id="tok" type="password" placeholder="Token einsetzen" autocomplete="off"></label>
-    <div class="row"><button class="primary" id="btn-token">Token speichern (Agent startet neu)</button></div>
     <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist nötig, weil der Agent das Token beim Start liest.</p>
   </div>
   <h2>Admin-Passwort <span class="muted">(dieses Login)</span></h2>
   <div class="card">
     <label class="field">Aktuelles Passwort <input id="oldpw" type="password" autocomplete="current-password"></label>
     <label class="field">Neues Passwort (8-128 Zeichen) <input id="newpw" type="password" autocomplete="new-password"></label>
-    <div class="row"><button class="primary" id="btn-pw">Passwort ändern</button></div>
   </div>
   <h2>Update <span class="muted">(Worker-Dateien aus dem GitHub-Repo)</span></h2>
   <div class="card">
-    <p class="muted">Lädt die aktuellen Worker-Dateien (Agent, vmadmin, Units; raw@Commit-SHA, immutable), installiert sie per sudo und startet agent-sandbox-agent sowie vm-admin neu. Der vm-admin-Neustart läuft detached (systemd-run --on-active=2s) - diese Seite lädt danach automatisch neu.</p>
+    <p class="muted">Aktualisiert die komplette VM-Umgebung wie nach einem --recreate (alle Worker-Dateien + Units + VERSION + Pakete/Config aus der cloud-init; raw@Commit-SHA, immutable) - nur die bestehende Konfiguration (Token, Endpoint, Admin-Passwort in ~/.config/agent-sandbox) bleibt erhalten. Installiert per sudo, startet agent-sandbox-agent und ttyd-worker neu, vm-admin detached. Der vm-admin-Neustart läuft detached (systemd-run --on-active=2s) - diese Seite lädt danach automatisch neu.</p>
     <div class="row"><button class="primary" id="btn-vm-update">Update starten</button><span class="muted" id="vm-update-msg"></span></div>
+  </div>
+  <h2>Einstellungen speichern</h2>
+  <div class="card">
+    <p class="muted">Uebernimmt alle oben eingetragenen Werte mit einem Klick. Ob ein Agent-Neustart noetig ist, wird automatisch erkannt (Endpoint oder Token geaendert); danach wird auf den Neustart gewartet und das Ergebnis quittiert.</p>
+    <div class="row"><button class="primary" id="btn-save-settings">Speichern</button><span class="muted" id="save-msg"></span></div>
   </div>
 </section>
 
@@ -547,6 +579,7 @@ label.field input{width:100%}
   <div class="card">
     <p class="muted">Web-Terminal der VM (ttyd-worker.service, Login worker). ttyd lauscht nur auf 127.0.0.1:7681 in der VM und ist ausschliesslich ueber diesen authentifizierten vmadmin-Proxy (/terminal/) erreichbar; die vmadmin-Anmeldung schuetzt ihn (keine zweite Passwortabfrage).</p>
     <iframe id="ttyd-frame" style="width:100%;height:60vh;border:1px solid #333;border-radius:6px;background:#000" title="ttyd Terminal"></iframe>
+    <div class="row"><button id="btn-ttyd-reload">Terminal neu laden</button><span class="muted">laedt das ttyd-Terminal neu (z.B. wenn es nach einem ttyd-Neustart leer bleibt)</span></div>
   </div>
 </section>
 
@@ -586,12 +619,24 @@ label.field input{width:100%}
   </div>
 </dialog>
 
+<dialog id="dlg-wait">
+  <h3>Bitte warten</h3>
+  <p class="muted" id="dlg-wait-msg"></p>
+</dialog>
+
+<dialog id="dlg-result">
+  <h3>Ergebnis</h3>
+  <pre class="mono" id="dlg-result-msg" style="white-space:pre-wrap;max-height:40vh;overflow-y:auto"></pre>
+  <div class="dlgrow"><button class="primary" id="dlg-result-ok">OK</button></div>
+</dialog>
+
 <div class="toast" id="toast"><span id="toast-msg"></span><button id="toast-copy" type="button" style="display:none">kopieren</button></div>
 
 <script nonce="__NONCE__">
 "use strict";
 var PW = sessionStorage.getItem("vmadminpw") || "";
 var statusTimer = null;
+var CUR_EP = "";  // aktuelles Relay-Endpoint aus /admin/api/state (Restart-Erkennung)
 function autoSecs(){
   // Auto-Refresh-Intervall der Status-Seite: numeric updown, geclampt auf 1-30 s, in localStorage gehalten
   var v = parseInt(document.getElementById("auto-int").value, 10);
@@ -686,6 +731,7 @@ function showPage(name){
   if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, autoSecs() * 1000); } }
   if (name === "dienste"){ refreshJournal(); }
   if (name === "verlauf"){ refreshHistory(); }
+  if (name === "terminal"){ loadTerminal(); }
 }
 function pageFromHash(){
   var h = location.hash.replace("#", "");
@@ -727,6 +773,8 @@ async function refreshStatus(){
   var d;
   try { d = await api("/admin/api/state"); } catch (e){ return; }
   document.getElementById("mode").textContent = "angemeldet (admin) · v" + (d.version || "?");
+  CUR_EP = d.endpoint || "";
+  document.getElementById("ep-cur").textContent = "aktuelles Endpoint: " + (CUR_EP || "-");
   document.getElementById("st-host").textContent = d.hostname;
   document.getElementById("st-uptime").textContent = fmtUptime(d.uptime_s);
   document.getElementById("st-load").textContent = (d.load || []).join(" / ") || "-";
@@ -747,33 +795,67 @@ async function refreshStatus(){
     : "aktuelles Endpoint: keins gesetzt (Platzhalter aus der cloud-init-Konfiguration)";
   document.getElementById("status-ts").textContent = "Stand " + new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
-async function saveEndpoint(){
-  var ep = document.getElementById("ep").value;
-  var ok = await showConfirm("Endpoint speichern", "Relay-Endpoint setzen und den Agent neu starten?");
-  if (!ok){ return; }
-  var r = await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
-  document.getElementById("ep").value = "";
-  if (r.warning){ toast("WARNUNG: " + r.warning, 30000, "warn"); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
-  refreshStatus();
-}
-async function saveToken(){
-  var tok = document.getElementById("tok").value;
-  var ok = await showConfirm("Token speichern", "Worker-Token setzen und den Agent neu starten?");
-  if (!ok){ return; }
-  var r = await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
-  document.getElementById("tok").value = "";
-  if (r.warning){ toast("WARNUNG: " + r.warning, 30000, "warn"); } else { toast("Token gesetzt, Agent neu gestartet"); }
-  refreshStatus();
-}
-async function changePw(){
+async function saveSettings(){
+  // ein Speichern-Button fuer alle Karten; Agent-Restart wird selbst erkannt
+  var ep = document.getElementById("ep").value.trim();
+  var tok = document.getElementById("tok").value.trim();
   var oldpw = document.getElementById("oldpw").value;
   var newpw = document.getElementById("newpw").value;
-  await api("/admin/api/password", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({old: oldpw, "new": newpw}) });
+  var epChanged = ep !== "" && ep !== CUR_EP;
+  var tokChanged = tok !== "";
+  var pwChanged = newpw !== "";
+  var msg = document.getElementById("save-msg");
+  if (!epChanged && !tokChanged && !pwChanged){ msg.textContent = "keine Aenderung"; return; }
+  if (pwChanged && oldpw === ""){ toast("altes Passwort fehlt", 30000, "err"); return; }
+  var warnings = [];
+  msg.textContent = "speichere ...";
+  try {
+    if (epChanged){
+      var r1 = await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
+      if (r1.warning){ warnings.push(r1.warning); }
+    }
+    if (tokChanged){
+      var r2 = await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
+      if (r2.warning){ warnings.push(r2.warning); }
+    }
+    if (pwChanged){
+      await api("/admin/api/password", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({old: oldpw, "new": newpw}) });
+      PW = newpw;
+      sessionStorage.setItem("vmadminpw", PW);
+    }
+  } catch (e) { msg.textContent = ""; return; }  // api() hat den Fehler-Toast gezeigt
+  document.getElementById("ep").value = "";
+  document.getElementById("tok").value = "";
   document.getElementById("oldpw").value = "";
   document.getElementById("newpw").value = "";
-  PW = newpw;
-  sessionStorage.setItem("vmadminpw", PW);
-  toast("Admin-Passwort geändert");
+  msg.textContent = "";
+  var restartNeeded = epChanged || tokChanged;  // Agent liest Endpoint/Token nur beim Start
+  if (restartNeeded){
+    await waitAgentRestart(warnings);
+  } else {
+    toast("Gespeichert (kein Agent-Neustart nötig)" + (warnings.length ? " - WARNUNG: " + warnings.join(" | ") : ""));
+  }
+  refreshStatus();
+}
+async function waitAgentRestart(warnings){
+  // Dialog: auf agent=active warten (max 30 s), dann Ergebnis quittieren (OK)
+  var dlg = document.getElementById("dlg-wait");
+  document.getElementById("dlg-wait-msg").textContent = "Agent wird neu gestartet - warte auf Status 'active' (max 30 s) ...";
+  dlg.showModal();
+  var active = false, waited = 0;
+  while (waited < 30){
+    await new Promise(function(r){ setTimeout(r, 1000); });
+    waited++;
+    try {
+      var d = await api("/admin/api/state");
+      if (d.agent === "active"){ active = true; break; }
+    } catch (e) {}
+  }
+  dlg.close();
+  var msg = (active ? "Agent ist wieder aktiv (nach " + waited + " s)." : "Agent meldet nach 30 s noch nicht 'active' - bitte Status/Journal pruefen.")
+            + (warnings.length ? "\nWARNUNG: " + warnings.join("\n") : "");
+  document.getElementById("dlg-result-msg").textContent = msg;
+  document.getElementById("dlg-result").showModal();
 }
 async function restartService(unit){
   var ok = await showConfirm("Neustart", unit + " neu starten?");
@@ -813,7 +895,30 @@ function showHist(en){
 }
 document.getElementById("dlg-hist-close").addEventListener("click", function(){ document.getElementById("dlg-hist").close(); });
 document.getElementById("btn-hist-refresh").addEventListener("click", refreshHistory);
-document.getElementById("ttyd-frame").src = "/terminal/";
+var ttydTimer = null;
+function loadTerminal(){
+  // ttyd erst laden, wenn der Dienst active ist (sonst 404/WS-Fehler bis zum Reload)
+  var f = document.getElementById("ttyd-frame");
+  if (f.dataset.loaded === "1"){ return; }
+  api("/admin/api/state").then(function(d){
+    if (d.ttyd === "active"){ f.dataset.loaded = "1"; f.src = "/terminal/"; }
+    else {
+      f.srcdoc = "<p style='color:#aaa;padding:1rem'>ttyd startet noch - bitte warten ...</p>";
+      if (!ttydTimer){
+        ttydTimer = setInterval(function(){
+          api("/admin/api/state").then(function(d2){
+            if (d2.ttyd === "active"){ clearInterval(ttydTimer); ttydTimer = null; f.dataset.loaded = "1"; f.src = "/terminal/"; }
+          }).catch(function(){});
+        }, 2000);
+      }
+    }
+  }).catch(function(){});
+}
+document.getElementById("btn-ttyd-reload").addEventListener("click", function(){
+  var f = document.getElementById("ttyd-frame");
+  f.dataset.loaded = "1";
+  f.src = "/terminal/?t=" + Date.now();  // cache-bust
+});
 function silenceTtydConsole(){
   // ttyd-eigenes Client-JS loggt in die Browser-Konsole; das iframe ist same-origin
   // (/terminal/* wird vom vmadmin-Proxy ausgeliefert) -> Konsole des iframe stummschalten
@@ -849,9 +954,8 @@ document.getElementById("auto-int").addEventListener("change", function(){
   try{ s = localStorage.getItem("vmadmin-auto-s"); }catch(e){}
   if (s){ var v = parseInt(s, 10); if (!isNaN(v)){ document.getElementById("auto-int").value = Math.min(30, Math.max(1, v)); } }
 })();
-document.getElementById("btn-ep").addEventListener("click", saveEndpoint);
-document.getElementById("btn-token").addEventListener("click", saveToken);
-document.getElementById("btn-pw").addEventListener("click", changePw);
+document.getElementById("btn-save-settings").addEventListener("click", saveSettings);
+document.getElementById("dlg-result-ok").addEventListener("click", function(){ document.getElementById("dlg-result").close(); });
 async function vmUpdate(){
   // Update komplett in der VM (run_vm_update hinter POST /admin/api/update); nur anstossen
   var ok = await showConfirm("Update starten", "Worker-Dateien aus dem Repo laden, installieren und agent + vm-admin neu starten?");

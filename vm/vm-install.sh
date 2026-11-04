@@ -94,9 +94,20 @@ LOG_SINKS=()   # active log files (init_log)
 # uniform output design: colors only on a tty; every message also goes to the log sinks
 if [ -t 1 ]; then
   C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_ERR=$'\e[31m'; C_PHASE=$'\e[1m'; C_HOT=$'\e[1;31m'; C_OFF=$'\e[0m'
+  TTY=1
 else
   C_OK=""; C_WARN=""; C_ERR=""; C_PHASE=""; C_HOT=""; C_OFF=""
+  TTY=0
 fi
+# terminal size for the pinned status bar (apt: GetTerminalSize via TIOCGWINSZ on stdout;
+# without a tty apt prints plain lines - we draw no bar at all then)
+ROWS=24; COLS=80
+if [ "$TTY" -eq 1 ]; then
+  ROWS="$(tput lines 2>/dev/null || echo 24)"; COLS="$(tput cols 2>/dev/null || echo 80)"
+  case "$ROWS" in (*[!0-9]*|"") ROWS=24 ;; esac
+  case "$COLS" in (*[!0-9]*|"") COLS=80 ;; esac
+fi
+[ "$COLS" -lt 40 ] && COLS=40
 
 log_line() {
   local line f
@@ -124,23 +135,24 @@ init_log() {
   fi
 }
 
-bar_total=0 bar_done=0 bar_open=0 spin_i=0
-term_w() {
-  # Terminalbreite fuer die globale Statuszeile (Fallback 80, mind. 40)
-  local w
-  w="$(tput cols 2>/dev/null || echo 80)"
-  case "$w" in (*[!0-9]*|"") w=80 ;; esac
-  [ "$w" -lt 40 ] && w=40
-  echo "$w"
+bar_total=0 bar_done=0 bar_label="" spin_i=0
+bar_setup() {
+  # apt-style: pin the status bar on the LAST terminal row via a VT100 scroll region
+  # (DECSTBM \033[1;N r on rows 1..ROWS-1). Normal output scrolls inside the region,
+  # the bar row stays put. Debian/apt apt-pkg/install-progress.cc SetupTerminalScrollArea()
+  # (save cursor \0337, set region, restore \0338, move up \033[1A).
+  [ "$TTY" -eq 1 ] && [ "$ROWS" -ge 4 ] || return 0
+  printf '\033[1;%dr' "$((ROWS - 1))"
+}
+bar_teardown() {
+  # reset scroll region + clear everything below the cursor (apt Stop(): \033[1;Nr + \033[J)
+  [ "$TTY" -eq 1 ] && [ "$ROWS" -ge 4 ] || return 0
+  printf '\033[1;%dr\033[J' "$ROWS"
 }
 _render_line() {
-  # globale Statuszeile in voller Terminalbreite, permanent mit \r ueberschrieben:
-  #   [######   [ aktuelle Aufgabe ]   #####]  45%
-  # Prozent rechts, Aufgabe mittig in eckigen Klammern ueber dem Balken;
-  # Balkenfuellung = floor(Prozent * Breite) wie bei apt (Debian/apt install-progress.cc)
-  local label="$1" w bw pct filled pad lab start
-  w="$(term_w)"
-  bw=$((w - 8))                 # "[" + "]" + " 100%" (+1 Puffer)
+  # status bar on the pinned bottom row: DECSC (save cursor), move to row ROWS, \r-draw, DECRC
+  local label="$1" bw pct filled pad lab start line
+  bw=$((COLS - 7))
   [ "$bw" -lt 10 ] && bw=10
   pct=0; filled=0
   if [ "$bar_total" -gt 0 ]; then
@@ -148,47 +160,57 @@ _render_line() {
     filled=$((bar_done * bw / bar_total))
   fi
   [ "$filled" -gt "$bw" ] && filled=$bw
-  pad="$(printf '#%.0s' $(seq 1 $filled))"
+  pad=""
+  [ "$filled" -gt 0 ] && pad="$(printf '#%.0s' $(seq 1 $filled))"
   if [ "$filled" -gt 0 ] && [ "$filled" -lt "$bw" ]; then pad="${pad}>"; fi
   while [ ${#pad} -lt "$bw" ]; do pad="${pad} "; done
   lab="[ ${label} ]"
   if [ ${#lab} -gt "$bw" ]; then lab="${lab:0:$((bw - 1))}]"; fi
   start=$(( (bw - ${#lab}) / 2 ))
   pad="${pad:0:$start}${lab}${pad:$((start + ${#lab}))}"
-  printf '\r%s[%s]%4d%%%s' "$C_PHASE" "$pad" "$pct" "$C_OFF"
-  if [ "$bar_total" -gt 0 ] && [ "$bar_done" -ge "$bar_total" ]; then printf '\n'; bar_open=0; else bar_open=1; fi
+  line="[${pad}]$(printf ' %3d%%' "$pct")"
+  if [ "$TTY" -eq 1 ] && [ "$ROWS" -ge 4 ]; then
+    printf '\0337\033[%d;1H\r%s\0338' "$ROWS" "$line"
+  fi
+  # non-TTY: no bar on stdout (apt: no fancy bar without terminal size) - log only
+  return 0
 }
 bar() {
-  # globaler Fortschrittsbalken (permanente Statuszeile): bar <done> <total> <label>
+  # global status bar (pinned bottom row): bar <done> <total> <label>
   local done="$1" total="$2" label="$3" pct=0
-  bar_done="$done"; bar_total="$total"
+  bar_done="$done"; bar_total="$total"; bar_label="$label"
   [ "$total" -gt 0 ] && pct=$((done * 100 / total))
   _render_line "$label"
   log_line "PROGRESS: $done/$total ($pct%%) $label"
+  return 0
 }
 subbar() {
-  # kleiner Sub-Balken (20 Zeichen, eigene Zeile) fuer Subprozesse wie Downloads
-  local pct="$1" label="$2" filled pad
-  bar_nl
+  # small sub-bar for sub-processes (downloads) on the same pinned row, 20 chars wide
+  local pct="$1" label="$2" filled pad line
   filled=$((pct * 20 / 100))
-  pad="$(printf '#%.0s' $(seq 1 $filled))"
+  pad=""
+  [ "$filled" -gt 0 ] && pad="$(printf '#%.0s' $(seq 1 $filled))"
   if [ "$filled" -gt 0 ] && [ "$filled" -lt 20 ]; then pad="${pad}>"; fi
   while [ ${#pad} -lt 20 ]; do pad="${pad} "; done
-  printf '\r%s[%s] %3d%%  %s%s' "$C_PHASE" "$pad" "$pct" "$label" "$C_OFF"
-  if [ "$pct" -ge 100 ]; then printf '\n'; fi
+  line="[${pad}] $(printf '%3d%%' "$pct")  ${label}"
+  while [ ${#line} -lt $((COLS - 1)) ]; do line="${line} "; done
+  if [ "$TTY" -eq 1 ] && [ "$ROWS" -ge 4 ]; then
+    printf '\0337\033[%d;1H\r%s\0338' "$ROWS" "$line"
+  fi
+  log_line "SUBBAR: $pct%% $label"
+  [ "$pct" -ge 100 ] && _render_line "$bar_label"   # main bar redraws after sub-bar
+  return 0
 }
-bar_nl() {
-  # offene Statuszeile vor normaler Ausgabe abschliessen, sonst landet der Text in der Balkenzeile
-  if [ "$bar_open" -eq 1 ]; then printf '\n'; bar_open=0; fi
-}
+bar_nl() { :; }    # bar lives on its own pinned row - nothing to close on the text line
 spin_tick() {
-  # Activity-Indicator fuer wartende Prozesse (z.B. Polling) in der globalen Statuszeile
+  # activity indicator for waiting (polling) on the pinned status row
   local label="$1"
   spin_i=$(( (spin_i + 1) % 4 ))
   local c="\\|/-"
   _render_line "${c:$spin_i:1} $label"
+  return 0
 }
-spin_clear() { local w; w="$(term_w)"; printf '\r%*s\r' "$w" ""; }
+spin_clear() { :; }
 
 die() { log_line "FEHLER: $1"; bar_nl; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 info() { bar_nl; printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
@@ -372,7 +394,7 @@ resolve_raw_base() {
   # commits API (docs.github.com/en/rest/commits) for a public repo needs no auth.
   need_cmd curl
   WORKDIR="$(mktemp -d)"
-  trap 'rm -rf "$WORKDIR"' EXIT
+  trap 'bar_teardown; rm -rf "$WORKDIR"' EXIT
   local repo_slug ref head_sha
   repo_slug="${RAW_BASE#https://raw.githubusercontent.com/}"
   repo_slug="${repo_slug%/*}"
@@ -834,6 +856,7 @@ main() {
   esac
   parse_args "$@"
   init_log
+  bar_setup
   log_line "START: $SELF_PATH ${ORIG_ARGS[*]} (dry=$DRY_RUN recreate=$RECREATE)"
   resolve_raw_base
   bar 1 6 "Repo-HEAD aufgeloest, Dateien bei Bedarf"

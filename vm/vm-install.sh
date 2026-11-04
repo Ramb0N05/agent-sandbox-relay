@@ -25,7 +25,7 @@
 # a base64 heredoc. NO relay API access anywhere in this script (no POST /jobs, no /files).
 # Self-update: the script compares its own sha256 with the repo copy
 # ($RAW_BASE/vm/vm-install.sh; raw.githubusercontent.com serves raw file bytes, GitHub REST
-# contents API download_url) and can replace itself (--self-update, backup included).
+# contents API download_url) and replaces itself by default (opt-out: --no-self-update).
 # Image paths default to the libvirt default pool directory, read at runtime from the
 # libvirt config (virsh pool-dumpxml default -> <target><path>, libvirt formatstorage.html;
 # persistent definition /etc/libvirt/storage/default.xml). The documented standard
@@ -76,7 +76,7 @@ ADMIN_PW=""
 RECREATE=0
 ASSUME_YES=0
 DRY_RUN=0
-SELF_UPDATE=0
+SELF_UPDATE=1   # default: self-update against the repo copy; opt-out with --no-self-update
 WORKDIR=""
 VM_USER="worker"
 ORIG_ARGS=()
@@ -134,9 +134,10 @@ vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren (Update nur über s
   --admin-password PW    vmadmin-Passwort (Installation: sonst wird eines generiert;
                          Update: bleibt unberührt, Hash liegt in der VM)
   --raw-base URL         Repo-Quelle (Default: raw.githubusercontent.com, Branch worker)
-  --self-update          vor dem Lauf sha256 des Skripts mit der Repo-Kopie (vm/vm-install.sh)
-                         vergleichen; bei Abweichung $0 durch die Repo-Version ersetzen
-                         (Backup inklusive) und neu starten
+  --no-self-update       Self-Update abschalten (Standard: AN - vor dem Lauf sha256 des
+                         Skripts mit der Repo-Kopie vm/vm-install.sh vergleichen; bei
+                         Abweichung die Datei durch die Repo-Version ersetzen, Backup
+                         inklusive, und mit den Original-Argumenten neu starten)
   --recreate             bestehende VM verwerfen und neu anlegen (LÖSCHT ALLE VM-DATEN)
   --yes                  Bestätigungen abkürzen
   --dry-run              nur holen, ersetzen und anzeigen; nichts anlegen oder ändern
@@ -165,7 +166,7 @@ parse_args() {
       --ttyd-password) TTYD_PW="${2:?--ttyd-password braucht einen Wert}"; shift 2 ;;
       --admin-password) ADMIN_PW="${2:?--admin-password braucht einen Wert}"; shift 2 ;;
       --raw-base) RAW_BASE="${2:?--raw-base braucht einen Wert}"; shift 2 ;;
-      --self-update) SELF_UPDATE=1; shift ;;
+      --no-self-update) SELF_UPDATE=0; shift ;;
       --recreate) RECREATE=1; shift ;;
       --yes) ASSUME_YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
@@ -249,7 +250,7 @@ check_self_update() {
     info "Self-Update: $self durch die Repo-Version ersetzt (sha256 ${remote_sha:0:12}..., Backup: $bak) - starte mit Original-Argumenten neu."
     exec bash "$self" "${ORIG_ARGS[@]}"
   else
-    info "Self-Update: neuere Repo-Version vorhanden - Update mit: $self --self-update <bisherige Optionen> (ersetzt die Datei, Backup inklusive, startet danach neu)."
+    info "Self-Update abgeschaltet (--no-self-update): lokale Datei ${local_sha:0:12}..., Repo ${remote_sha:0:12}... - Unterschied wird ignoriert."
   fi
 }
 
@@ -328,12 +329,14 @@ render_user_data() {
 # ---------- serial console ----------
 
 console_run() {
-  # $1 = command for the VM shell (may span multiple lines), $2 = seconds to wait for the RC marker
-  # output lands in $WORKDIR/console.out, the command's exit code in $CONSOLE_RC
+  # $1 = command for the VM shell (may span multiple lines), $2 = max seconds to wait for the RC marker
+  # raw output lands in $WORKDIR/console.out, CR-stripped (serial console sends CRLF) in
+  # $WORKDIR/console.clean - parse ONLY console.clean; the command's exit code in $CONSOLE_RC
   # virsh(1): console [--force] [--safe] connects the guest serial console to stdin/stdout;
   # --force disconnects stale sessions, --safe requires safe console handling
   local cmd="$1" wait_s="${2:-60}"
   local out="$WORKDIR/console.out"
+  local clean="$WORKDIR/console.clean"
   local marker="__RC${RANDOM}__"
   : > "$out"
   CONSOLE_RC=""
@@ -343,11 +346,19 @@ console_run() {
     sleep 1
     printf '%s\n' "$cmd"
     printf 'echo "%s=$?"\n' "$marker"
-    sleep "$wait_s"
+    # return as soon as the marker is in the output instead of sleeping the full wait_s
+    # (28th round: fixed wait made every poll take the full timeout)
+    i=0
+    while [ "$i" -lt "$wait_s" ]; do
+      sleep 2
+      if grep -q "${marker}=" "$out" 2>/dev/null; then break; fi
+      i=$((i + 2))
+    done
   } | LC_ALL=C timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
+  tr -d '\r' < "$out" > "$clean"
   # || true: while the VM is still booting there is no marker yet; without it pipefail
   # fails the assignment and set -e kills the script silently (bug, 26th round)
-  CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$out" | tail -1 | cut -d= -f2)" || true
+  CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$clean" | tail -1 | cut -d= -f2)" || true
   if [ -z "$CONSOLE_RC" ]; then CONSOLE_RC="none"; fi
 }
 
@@ -365,13 +376,18 @@ wait_vm_ready() {
   need_cmd timeout
   local deadline=$((SECONDS + 1500))
   local boot1="" b=""
+  local clean="$WORKDIR/console.clean"
   info "Warte auf cloud-init (erster Boot) über die serielle Konsole ..."
   while [ $SECONDS -lt $deadline ]; do
     vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)).
 Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install) - dieses Skript setzt jetzt --events on_reboot=restart (einphasig). Log: journalctl -u libvirtd."
     console_run 'cloud-init status --wait --timeout 300; echo "BOOTID=$(cat /proc/sys/kernel/random/boot_id)"; cloud-init status' 320 >/dev/null
-    b="$(grep -o 'BOOTID=[0-9a-f-]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2)" || true
-    if grep -q 'status: done' "$WORKDIR/console.out" && [ -n "$b" ]; then boot1="$b"; break; fi
+    b="$(grep -o 'BOOTID=[0-9a-f-]*' "$clean" | tail -1 | cut -d= -f2)" || true
+    # boot1 = FIRST boot_id seen (28th round: taking it only together with status:done
+    # could capture the post-reboot id when the reboot cut the console session short,
+    # and phase 2 would then wait forever for a change that already happened)
+    if [ -z "$boot1" ] && [ -n "$b" ]; then boot1="$b"; fi
+    if grep -q 'status: done' "$clean" && [ -n "$boot1" ]; then break; fi
     sleep 10
   done
   [ -n "$boot1" ] || die "cloud-init nicht fertig geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
@@ -384,7 +400,7 @@ Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install)
       virsh_cmd start "$VM_NAME" || die "virsh start fehlgeschlagen"
     fi
     console_run 'cat /proc/sys/kernel/random/boot_id' 30 >/dev/null
-    b="$(tr -d '[:space:]' < "$WORKDIR/console.out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
+    b="$(tr -d '[:space:]' < "$clean" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
     if [ -n "$b" ] && [ "$b" != "$boot1" ]; then rebooted=1; break; fi
     sleep 15
   done
@@ -397,9 +413,11 @@ Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install)
   while [ $SECONDS -lt $ready_deadline ]; do
     vm_running || die "VM $VM_NAME ist während des Neustarts ausgegangen (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)). Manuell: virsh --connect $LIBVIRT_URI start $VM_NAME"
     console_run 'cloud-init status --wait --timeout 300; systemctl is-active agent-sandbox-agent.service vm-admin.service ttyd-worker.service; systemctl is-system-running; cloud-init status' 320 >/dev/null
-    if grep -q 'status: done' "$WORKDIR/console.out" \
-       && [ "$(grep -c '^active$' "$WORKDIR/console.out")" -ge 3 ] \
-       && grep -qE '^(running|degraded)$' "$WORKDIR/console.out"; then
+    # parse console.clean (CR-stripped): serial console sends CRLF, so ^active$ would
+    # never match the raw output (28th round)
+    if grep -q 'status: done' "$clean" \
+       && [ "$(grep -c '^active$' "$clean")" -ge 3 ] \
+       && grep -qE '^(running|degraded)$' "$clean"; then
       info "VM vollständig einsatzbereit (cloud-init done, agent/vm-admin/ttyd aktiv, System running/degraded)."
       return 0
     fi
@@ -609,7 +627,7 @@ update_vm() {
   # VM-Benutzer prüfen: eine VM der alten Bereitstellung (anderer Benutzer) wird abgewiesen
   console_run 'echo "USER=$(id -un)"' 30 >/dev/null
   local user
-  user="$(grep -oE 'USER=[A-Za-z0-9_.-]+' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)" || true
+  user="$(grep -oE 'USER=[A-Za-z0-9_.-]+' "$WORKDIR/console.clean" | tail -1 | cut -d= -f2-)" || true
   if [ "$user" != "$VM_USER" ]; then
     die "In der VM ist Benutzer \"${user:-?}\" eingeloggt, erwartet ist \"$VM_USER\".
 Diese VM traegt noch die alte Bereitstellung (vor der Umbenennung). Neu anlegen:
@@ -621,7 +639,7 @@ Diese VM traegt noch die alte Bereitstellung (vor der Umbenennung). Neu anlegen:
     # then the ENDPOINT constant of the installed agent)
     console_run "ep=\$(cat /home/$VM_USER/.config/agent-sandbox/endpoint 2>/dev/null); [ -z \"\$ep\" ] && ep=\$(grep -o 'ENDPOINT = \"[^\"]*\"' /usr/local/bin/agent-sandbox-agent | head -1 | cut -d'\"' -f2); echo \"EP=\$ep\"" 30 >/dev/null
     local ep
-    ep="$(grep -oE 'EP=https?://[^ ]*' "$WORKDIR/console.out" | tail -1 | cut -d= -f2-)" || true
+    ep="$(grep -oE 'EP=https?://[^ ]*' "$WORKDIR/console.clean" | tail -1 | cut -d= -f2-)" || true
     case "$ep" in
       ""|*"<agent-sandbox-relay-domain>"*) ;;
       *) DOMAIN="$ep"; info "Laufender Relay-Endpoint aus der VM übernommen: $DOMAIN" ;;

@@ -1,7 +1,7 @@
 # agent-sandbox-relay - Branch worker (VM-Seite)
 
 Dieser Branch enthält die VM-seitigen Dateien der sandbox-worker-VM
-(Canonical-Doku: Canvas "sandbox-worker-vm"). Branch main enthält die
+(Canonical-Doku: Canvas "agent-sandbox-relay"). Branch main enthält die
 Server-Seite (Queue-Service agent-sandbox-relay: Dockerfile,
 agent_sandbox_relay.py, README.md). Der Branch enthält nur die
 VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien

@@ -1,7 +1,7 @@
 # agent-sandbox-relay
 
 Job-Queue-Service (Docker-Service-Name: agent-sandbox-relay) für die
-vibe-sandbox-VM. Referenz-Doku: Canvas "vibe-sandbox-vm", Abschnitt 10.5
+sandbox-worker-VM. Referenz-Doku: Canvas "vibe-sandbox-vm", Abschnitt 10.5
 (Transportoption E: Pull-Agent mit Job-Queue auf dem Hetzner-Server);
 Dateitransfer: Abschnitt 10.8.
 

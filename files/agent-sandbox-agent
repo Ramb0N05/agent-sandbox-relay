@@ -2,8 +2,8 @@
 # transport option E: pull agent against the job queue (docker service agent-sandbox-relay) on the Hetzner server (section 10.5)
 # 11th round: persistent HTTP connection (no curl process per call), no idle sleep
 # (the /jobs/next long poll blocks server-side; sleep only on errors).
-# install target in the VM: /usr/local/bin/agent-sandbox-agent, owner vibe:vibe, 0700
-# (normally provisioned via cloud-init, see cloud-init/vibe-sandbox-user-data.yaml)
+# install target in the VM: /usr/local/bin/agent-sandbox-agent, owner worker:worker, 0700
+# (normally provisioned via cloud-init, see cloud-init/sandbox-worker-user-data.yaml)
 import http.client
 import json
 import os
@@ -13,11 +13,11 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-# worker token: file before constant (vmadmin writes /home/vibe/.config/agent-sandbox/worker-token,
+# worker token: file before constant (vmadmin writes /home/worker/.config/agent-sandbox/worker-token,
 # then systemctl restart agent-sandbox-agent - the token is only read at startup).
 TOKEN_FILE = os.environ.get(
     "AGENT_SANDBOX_TOKEN_FILE",
-    "/home/vibe/.config/agent-sandbox/worker-token",
+    "/home/worker/.config/agent-sandbox/worker-token",
 )
 
 

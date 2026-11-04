@@ -1,30 +1,38 @@
 #!/bin/bash
-# vm-install.sh - install or update the vibe-sandbox VM on the local libvirt host (19th round).
+# vm-install.sh - install or update the sandbox-worker VM on the local libvirt host (20th round).
 # Install (VM does not exist): fetches the current worker-branch files from the public
 # GitHub repo, replaces the three user-data placeholders, generates the initial
-# passwords, runs virt-install and prints the initial values.
+# passwords, renders the user-data into a temporary directory (nothing is written
+# to /root), runs virt-install and prints the initial values.
 # Update (VM exists): VM data stays untouched - worker-token file, admin-hash and the
 # ttyd unit (which carries the ttyd password in ExecStart) are kept; the program files
 # and units ship through the relay job queue (documented deployment path, 15th round)
 # as long as the agent answers. If the agent does not answer, the script prints the
 # manual serial-console procedure instead.
-# All paths are parameters; no host path is hardcoded beyond documented defaults.
-# Sources: virt-install(1) (--noautoconsole: no automatic console connect), cloud-init
-# per-instance semantics (write_files/runcmd run once per overlay; a re-provision needs
-# a fresh overlay), libvirt virsh(1) (dominfo/domstate/net-dhcp-leases), kernel
-# random(4) (/dev/urandom), relay README (API contract), cc_write_files.py
-# (unit files land root:root 0644 without owner/permissions keys).
+# No root and no sudo needed on the host: libvirt access runs through the daemon
+# socket (libvirt group membership, Arch Wiki), volume creation goes through the
+# libvirt storage pool API (virtinst build_vol_install with backing_store) and the
+# cloud-init seed ISO is built in the virtinst user scratchdir when /var/lib/libvirt/boot
+# is not writable (installertreemedia.py make_scratchdir).
+# Standard paths by default: overlay and backing image in the libvirt default pool
+# directory (/var/lib/libvirt/images, virtinst _preferred_default_pool_path); project
+# paths appear only when passed explicitly as parameters.
+# Sources: virt-install(1) (--noautoconsole), libvirt vsh-table.c (lease table prints
+# a dividing line after the header - the data row is not line 2), libvirt virsh(1)
+# (net-dhcp-leases network [mac], vol-info/vol-delete vol-name-or-key-or-path,
+# domrename requires an inactive domain), kernel random(4) (/dev/urandom), relay
+# README (API contract: submit-token role for POST /jobs), cc_write_files.py.
 # German output, English comments/variables (PEP 8 convention, 18th round).
 set -euo pipefail
 
-VM_NAME="vibe-sandbox"
+VM_NAME="sandbox-worker"
 LIBVIRT_URI="qemu:///system"
-DISK="/mnt/GamesSSD0/libvirt/images/vibe-sandbox.qcow2"
-BACKING="/mnt/GamesHDD/libvirt/images/Arch-Linux-x86_64-cloudimg.qcow2"
+DISK="/var/lib/libvirt/images/sandbox-worker.qcow2"
+BACKING="/var/lib/libvirt/images/Arch-Linux-x86_64-cloudimg.qcow2"
 DISK_GB="64"
 MEM_MIB="8192"
 VCPUS="4"
-USER_DATA="/root/vibe-sandbox-user-data.yaml"
+USER_DATA=""
 RAW_BASE="https://raw.githubusercontent.com/Ramb0N05/agent-sandbox-relay/worker"
 DOMAIN=""
 RELAY=""
@@ -36,9 +44,10 @@ RECREATE=0
 ASSUME_YES=0
 DRY_RUN=0
 WORKDIR=""
+VM_USER="worker"
 
 # repo files shipped to the VM (name in repo -> target in VM, owner, mode)
-# units carry no placeholders; ttyd-vibe.service is only touched with --ttyd-password
+# units carry no placeholders; ttyd-worker.service is only touched with --ttyd-password
 # (it contains the ttyd password in ExecStart and would otherwise lose it).
 
 die() { printf 'Fehler: %s\n' "$1" >&2; exit 1; }
@@ -58,16 +67,24 @@ gen_password() {
 
 usage() {
   cat <<'EOF'
-vm-install.sh - vibe-sandbox-VM anlegen oder aktualisieren
+vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren
 
-  --vm-name NAME         libvirt-Name der VM (Default: vibe-sandbox)
+  --vm-name NAME         libvirt-Name der VM (Default: sandbox-worker)
   --connect URI          libvirt-URI (Default: qemu:///system)
-  --disk PATH            Overlay-qcow2 (Default: /mnt/GamesSSD0/libvirt/images/vibe-sandbox.qcow2)
-  --backing PATH         Basisimage (Default: /mnt/GamesHDD/libvirt/images/Arch-Linux-x86_64-cloudimg.qcow2)
+  --disk PATH           Overlay-qcow2 (Default: /var/lib/libvirt/images/sandbox-worker.qcow2,
+                         Standardverzeichnis des libvirt-Default-Pools). Für ein eigenes
+                         Verzeichnis gilt: das Verzeichnis muss ein bekannter libvirt-
+                         Storage-Pool sein oder das Overlay muss schon existieren
+                         (virt-install legt Volumes nur über Pools an).
+  --backing PATH        Basisimage (Default: /var/lib/libvirt/images/
+                         Arch-Linux-x86_64-cloudimg.qcow2 - Pfad des Arch-Cloud-Images
+                         im Standardverzeichnis; realen Pfad bei Bedarf angeben). Muss
+                         für den QEMU-Laufzeitbenutzer lesbar sein (0644 genügt).
   --disk-gb N           Overlay-Größe in GiB (Default: 64)
   --memory MIB          RAM in MiB (Default: 8192)
   --vcpus N             vCPUs (Default: 4)
-  --user-data PATH      Ziel der gerenderten user-data (Default: /root/vibe-sandbox-user-data.yaml)
+  --user-data PATH      optional: gerenderte user-data zusätzlich unter PATH ablegen
+                         (Default: nur temporär im Skript-Verzeichnis, nichts in /root)
   --domain URL          Relay-Endpoint (Installation: Pflicht; Update: Pflicht, falls der
                          Agent noch den Platzhalter enthält)
   --worker-token TOKEN  Worker-Token für die Erstinstallation (optional; sonst nach dem
@@ -78,12 +95,19 @@ vm-install.sh - vibe-sandbox-VM anlegen oder aktualisieren
   --admin-password PW    vmadmin-Passwort (Installation: sonst wird eines generiert;
                          Update: bleibt unberührt, Hash liegt in der VM)
   --relay URL           Relay-Basis-URL für das Update über die Job-Queue
-  --submitter-token T   Submitter-Token für das Update über die Job-Queue
+  --submitter-token T   Submitter-Token für das Update (das Skript ist Absender:
+                         POST /jobs und POST /files brauchen die Submitter-Rolle;
+                         das Worker-Token gehört zum Agent in der VM und verlässt sie nie)
   --raw-base URL        Repo-Quelle (Default: raw.githubusercontent.com, Branch worker)
   --recreate            bestehende VM verwerfen und neu anlegen (LÖSCHT ALLE VM-DATEN)
   --yes                 Bestätigungen abkürzen
   --dry-run             nur holen, ersetzen und anzeigen; nichts anlegen oder ändern
   -h | --help           diese Hilfe
+
+Ohne Root nutzbar: Zugang über den libvirt-Socket (Mitgliedschaft in der Gruppe
+libvirt, Arch Wiki "Libvirt"), Volume-Anlage über den Storage-Pool (libvirtd
+erzeugt die Datei), Löschung über virsh vol-delete. VM-Benutzer in der VM: worker.
+Bestehende VM umbenennen: virsh domrename (nur im ausgeschalteten Zustand, virsh(1)).
 EOF
 }
 
@@ -118,16 +142,29 @@ virsh_cmd() { virsh --connect "$LIBVIRT_URI" "$@"; }
 
 vm_exists() { virsh_cmd dominfo "$VM_NAME" >/dev/null 2>&1; }
 
+check_libvirt_access() {
+  # fail early with a clear message when the socket refuses the connection
+  virsh_cmd uri >/dev/null 2>&1 || die "kein Zugriff auf $LIBVIRT_URI.
+Lösung: als root ausführen oder den eigenen Nutzer in die Gruppe libvirt aufnehmen
+(Mitglieder haben passwortlosen Zugriff auf den RW-Socket, Arch Wiki \"Libvirt\")."
+}
+
+disk_exists() {
+  # volume inside a libvirt pool is not visible to an unprivileged caller on disk
+  # (pool directory permissions), so ask the daemon as well
+  [ -e "$DISK" ] || virsh_cmd vol-info "$DISK" >/dev/null 2>&1
+}
+
 fetch_repo_files() {
   need_cmd curl
   WORKDIR="$(mktemp -d)"
   trap 'rm -rf "$WORKDIR"' EXIT
   # current worker-branch HEAD via raw.githubusercontent (repo is public)
   local f
-  for f in cloud-init/vibe-sandbox-user-data.yaml \
+  for f in cloud-init/sandbox-worker-user-data.yaml \
            files/agent-sandbox-agent \
            files/agent-sandbox-agent.service \
-           files/ttyd-vibe.service \
+           files/ttyd-worker.service \
            files/vmadmin \
            files/vm-admin.service; do
     local target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
@@ -142,8 +179,8 @@ render_user_data() {
   [ -n "$DOMAIN" ] || die "Installation braucht --domain (Relay-Endpoint, z. B. https://sandbox-relay.example)"
   [ -n "$TTYD_PW" ] || TTYD_PW="$(gen_password)"
   [ -n "$ADMIN_PW" ] || ADMIN_PW="$(gen_password)"
-  local ud target
-  ud="$(cat "$WORKDIR/cloud-init_vibe-sandbox-user-data.yaml")"
+  local ud
+  ud="$(cat "$WORKDIR/cloud-init_sandbox-worker-user-data.yaml")"
   ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   ud="${ud//<ttyd-passwort>/$TTYD_PW}"
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
@@ -151,17 +188,19 @@ render_user_data() {
     *"<agent-sandbox-relay-domain>"*|*"<ttyd-passwort>"*|*"<vm-admin-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;
   esac
-  target="$(dirname "$USER_DATA")"
-  [ -d "$target" ] || die "Zielverzeichnis der user-data existiert nicht: $target"
-  if [ "$DRY_RUN" -eq 0 ] && [ -e "$USER_DATA" ]; then
-    mv "$USER_DATA" "$USER_DATA.bak-$(date +%Y%m%d-%H%M%S)"
-    info "Bestehende user-data gesichert ($USER_DATA.bak-...)."
-  fi
-  if [ "$DRY_RUN" -eq 0 ]; then
+  # the temp copy is what virt-install gets; --user-data only adds a persistent copy
+  printf '%s' "$ud" > "$WORKDIR/user-data.rendered"
+  chmod 600 "$WORKDIR/user-data.rendered"
+  if [ -n "$USER_DATA" ] && [ "$DRY_RUN" -eq 0 ]; then
+    local target
+    target="$(dirname "$USER_DATA")"
+    [ -d "$target" ] || die "Zielverzeichnis der user-data existiert nicht: $target"
+    if [ -e "$USER_DATA" ]; then
+      mv "$USER_DATA" "$USER_DATA.bak-$(date +%Y%m%d-%H%M%S)"
+      info "Bestehende user-data gesichert ($USER_DATA.bak-...)."
+    fi
     printf '%s' "$ud" > "$USER_DATA"
     chmod 600 "$USER_DATA"
-  else
-    printf '%s' "$ud" > "$WORKDIR/user-data.rendered"
   fi
   if [ -z "$WORKER_TOKEN" ]; then
     info "Hinweis: kein --worker-token angegeben - Worker-Token nach dem Boot über die vmadmin-UI setzen."
@@ -171,7 +210,7 @@ render_user_data() {
 install_vm() {
   [ -n "$DOMAIN" ] || die "--domain fehlt (siehe --help)"
   [ -e "$BACKING" ] || die "Basisimage fehlt: $BACKING (--backing)"
-  if [ -e "$DISK" ]; then
+  if disk_exists; then
     die "Overlay existiert bereits: $DISK
 cloud-init läuft nur einmal pro Overlay (per-instance); eine Neu-Provisionierung braucht
 ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehenden VM)."
@@ -184,6 +223,8 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
   fi
   need_cmd virt-install
   # --noautoconsole: no automatic console connect, virt-install returns (virt-install(1))
+  # size+backing_store make virtinst create the volume through the parent storage pool
+  # (build_vol_install), so no direct write access to the pool directory is needed
   virt-install \
     --connect "$LIBVIRT_URI" \
     --name "$VM_NAME" \
@@ -197,7 +238,7 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --graphics none \
     --memballoon none \
     --controller usb,model=none \
-    --cloud-init user-data="$USER_DATA",disable=on \
+    --cloud-init user-data="$WORKDIR/user-data.rendered",disable=on \
     --noautoconsole
   info "VM angelegt, wartet auf DHCP-Lease (Netzwerk default) ..."
   local ip=""
@@ -219,11 +260,14 @@ vm_ip() {
   # MAC from domiflist, then the matching lease row
   # (net-dhcp-leases takes the MAC as an argument; columns: expiry date, time,
   # MAC, protocol, IP/prefix, hostname, client id - so the IP is field 5)
+  # match the MAC instead of counting lines: vshTable prints a header, then a
+  # dividing line, then the data rows (libvirt vsh-table.c) - the data row is
+  # line 3, not line 2
   local mac
   mac="$(virsh_cmd domiflist "$VM_NAME" 2>/dev/null | awk '/network/ {print $NF; exit}')" || true
   [ -n "$mac" ] || return 0
   virsh_cmd net-dhcp-leases default "$mac" 2>/dev/null \
-    | awk 'NR == 2 {sub(/\/.*/, "", $5); print $5; exit}'
+    | awk -v m="$mac" 'index($0, m) {sub(/\/.*/, "", $5); print $5; exit}'
 }
 
 print_initial_values() {
@@ -231,7 +275,7 @@ print_initial_values() {
   info ""
   info "================ Initialwerte (bitte notieren) ================"
   [ -n "$ip" ] && info "VM-IP (DHCP):        $ip"
-  info "ttyd-Passwort:      $TTYD_PW   (Web-Terminal, Login vibe)"
+  info "ttyd-Passwort:      $TTYD_PW   (Web-Terminal, Login $VM_USER)"
   info "vmadmin-Passwort:   $ADMIN_PW   (Login admin; bitte in der UI ändern)"
   [ -n "$ip" ] && info "vmadmin-UI:         http://$ip/admin"
   if [ -n "$WORKER_TOKEN" ]; then
@@ -239,14 +283,18 @@ print_initial_values() {
   else
     info "Worker-Token:       nicht gesetzt - über die vmadmin-UI setzen (Karte Einstellungen)"
   fi
-  info "Konsole:             virsh --connect $LIBVIRT_URI console $VM_NAME (Autologin vibe)"
+  info "Konsole:             virsh --connect $LIBVIRT_URI console $VM_NAME (Autologin $VM_USER)"
   info "==============================================================="
   if [ "$DRY_RUN" -eq 1 ]; then
     info "Dry-Run: die gerenderte user-data liegt nur im Temporärverzeichnis, es wird nichts geschrieben."
   else
-    info "Achtung: die Passwörter stehen im Klartext in $USER_DATA (0600) und in"
-    info "dieser Ausgabe. Datei nach dem Boot nach Bedarf löschen; Passwörter in der"
-    info "vmadmin-UI ändern."
+    info "Die Passwörter stehen im Klartext in dieser Ausgabe"
+    if [ -n "$USER_DATA" ]; then
+      info "sowie in $USER_DATA (0600); Datei nach dem Boot nach Bedarf löschen."
+    else
+      info "(die user-data liegt nur temporär, nichts wurde dauerhaft gespeichert)."
+    fi
+    info "Passwörter nach dem Boot in der vmadmin-UI ändern."
   fi
 }
 
@@ -274,6 +322,13 @@ wait_job() {
   printf '%s %s' "$status" "$rc"
 }
 
+job_output() {
+  # $1 = job id; prints the result output of a finished job
+  local id="$1"
+  curl -fsS "$RELAY/jobs/$id" -H "Authorization: Bearer $SUBMIT" \
+    | jq -r '.output // ""' || die "Job-Abfrage fehlgeschlagen (id $id)"
+}
+
 run_job() {
   # $1 = description, $2 = cmd; aborts when the job does not finish cleanly
   local desc="$1" cmd="$2" id out
@@ -294,8 +349,8 @@ ship_file() {
     -H "Authorization: Bearer $SUBMIT" -H "Content-Type: application/octet-stream" \
     --data-binary "@$local_file" | jq -r '.id')" \
     || die "Upload fehlgeschlagen: $vmname"
-  run_job "VIBE_FETCH $vmname" "VIBE_FETCH $fid /home/vibe/.vm-update/$vmname"
-  run_job "install $vmname" "sudo install -o $owner -g $owner -m $mode /home/vibe/.vm-update/$vmname $target"
+  run_job "VIBE_FETCH $vmname" "VIBE_FETCH $fid /home/$VM_USER/.vm-update/$vmname"
+  run_job "install $vmname" "sudo install -o $owner -g $owner -m $mode /home/$VM_USER/.vm-update/$vmname $target"
 }
 
 agent_alive() {
@@ -309,12 +364,29 @@ agent_alive() {
   [ "$status" = "done" ] && [ "$rc" = "0" ]
 }
 
+check_vm_user() {
+  # the update ships units for the current provisioning (user worker);
+  # a VM from before the rename still runs user vibe and must be recreated
+  local id out user
+  id="$(queue_job "id -un")"
+  out="$(wait_job "$id")"
+  [ "${out%% *}" = "done" ] && [ "${out##* }" = "0" ] || return 0
+  user="$(job_output "$id" | tr -d '\n')"
+  if [ "$user" != "$VM_USER" ]; then
+    die "Der Agent läuft als Benutzer \"$user\", erwartet ist \"$VM_USER\".
+Diese VM trägt noch die alte Bereitstellung (vor der Umbenennung). Dateien und
+Units des aktuellen worker-Zweigs passen nicht zu ihr. Neu anlegen:
+  $0 --recreate --yes --domain <relay-domain> ...   (LÖSCHT ALLE VM-DATEN)"
+  fi
+  info "VM-Benutzer bestätigt: $user"
+}
+
 manual_instructions() {
   info ""
   info "Der Agent beantwortet keine Jobs (Endpoint-/Token-Problem oder VM gerade"
   info "ohne funktionierenden Agent). manueller Weg über die serielle Konsole:"
   info ""
-  info "  virsh --connect $LIBVIRT_URI console $VM_NAME    (Autologin vibe, sudo frei)"
+  info "  virsh --connect $LIBVIRT_URI console $VM_NAME    (Autologin $VM_USER, sudo frei)"
   info ""
   info "Dann in der VM (Dateien direkt vom öffentlichen Repo holen):"
   info ""
@@ -324,12 +396,14 @@ manual_instructions() {
     curl -fsSL $RAW_BASE/files/agent-sandbox-agent -o /tmp/vm-update/agent
     curl -fsSL $RAW_BASE/files/vmadmin            -o /tmp/vm-update/vmadmin
     curl -fsSL $RAW_BASE/files/agent-sandbox-agent.service -o /tmp/vm-update/agent.service
+    curl -fsSL $RAW_BASE/files/ttyd-worker.service  -o /tmp/vm-update/ttyd-worker.service
     curl -fsSL $RAW_BASE/files/vm-admin.service    -o /tmp/vm-update/vm-admin.service
     # Agent-Platzhalter ersetzen (Endpoint des Pull-Agents):
-    sed -i 's#<agent-sandbox-relay-domain>#<deine-relay-domain>#' /tmp/vm-update/agent
-    sudo install -o vibe -g vibe -m 0700 /tmp/vm-update/agent   /usr/local/bin/agent-sandbox-agent
-    sudo install -o vibe -g vibe -m 0700 /tmp/vm-update/vmadmin /usr/local/bin/vmadmin
+    sed -i 's#<agent-sandbox-relay-domain>#$dom#' /tmp/vm-update/agent
+    sudo install -o $VM_USER -g $VM_USER -m 0700 /tmp/vm-update/agent   /usr/local/bin/agent-sandbox-agent
+    sudo install -o $VM_USER -g $VM_USER -m 0700 /tmp/vm-update/vmadmin /usr/local/bin/vmadmin
     sudo install -o root -g root -m 0644 /tmp/vm-update/agent.service /etc/systemd/system/agent-sandbox-agent.service
+    sudo install -o root -g root -m 0644 /tmp/vm-update/ttyd-worker.service /etc/systemd/system/ttyd-worker.service
     sudo install -o root -g root -m 0644 /tmp/vm-update/vm-admin.service /etc/systemd/system/vm-admin.service
     sudo systemctl daemon-reload
     sudo systemctl restart vm-admin.service
@@ -377,10 +451,11 @@ update_vm() {
     manual_instructions
     exit 3
   fi
-  run_job "Update-Verzeichnis" "mkdir -p /home/vibe/.vm-update"
+  check_vm_user
+  run_job "Update-Verzeichnis" "mkdir -p /home/$VM_USER/.vm-update"
 
-  # 1) vmadmin (runs as vibe, port 80) - restart after install
-  ship_file "$WORKDIR/files_vmadmin" "vmadmin" "/usr/local/bin/vmadmin" "vibe" "0700"
+  # 1) vmadmin (runs as $VM_USER, port 80) - restart after install
+  ship_file "$WORKDIR/files_vmadmin" "vmadmin" "/usr/local/bin/vmadmin" "$VM_USER" "0700"
   # 2) units (no placeholders; root:root 0644 like cloud-init write_files defaults)
   ship_file "$WORKDIR/files_agent-sandbox-agent.service" "agent.service" \
     "/etc/systemd/system/agent-sandbox-agent.service" "root" "0644"
@@ -390,20 +465,20 @@ update_vm() {
   if [ -n "$TTYD_PW" ]; then
     # only with an explicit password: unit carries it in ExecStart
     local unit
-    unit="$(cat "$WORKDIR/files_ttyd-vibe.service")"
+    unit="$(cat "$WORKDIR/files_ttyd-worker.service")"
     unit="${unit//<ttyd-passwort>/$TTYD_PW}"
     printf '%s' "$unit" > "$WORKDIR/ttyd-unit.rendered"
-    ship_file "$WORKDIR/ttyd-unit.rendered" "ttyd-vibe.service" \
-      "/etc/systemd/system/ttyd-vibe.service" "root" "0644"
+    ship_file "$WORKDIR/ttyd-unit.rendered" "ttyd-worker.service" \
+      "/etc/systemd/system/ttyd-worker.service" "root" "0644"
     run_job "daemon-reload (ttyd)" "sudo systemctl daemon-reload"
-    run_job "ttyd neu starten" "sudo systemctl restart ttyd-vibe.service"
+    run_job "ttyd neu starten" "sudo systemctl restart ttyd-worker.service"
   else
-    info "  ttyd-vibe.service unberührt (Passwort steckt in der Unit; --ttyd-password zum Ändern)."
+    info "  ttyd-worker.service unberührt (Passwort steckt in der Unit; --ttyd-password zum Ändern)."
   fi
   # 3) vmadmin restart (not part of the job chain of the agent)
   run_job "vm-admin neu starten" "sudo systemctl restart vm-admin.service"
   # 4) agent last; delayed restart so this job can still post its result
-  ship_file "$WORKDIR/agent.rendered" "agent" "/usr/local/bin/agent-sandbox-agent" "vibe" "0700"
+  ship_file "$WORKDIR/agent.rendered" "agent" "/usr/local/bin/agent-sandbox-agent" "$VM_USER" "0700"
   run_job "Agent-Restart (verzögert)" \
     "sudo sh -c 'nohup sh -c \"sleep 3; systemctl restart agent-sandbox-agent\" >/dev/null 2>&1 &'"
   info "Update abgeschlossen. Worker-Token, vmadmin-Hash und ttyd-Passwort wurden nicht angetastet."
@@ -423,18 +498,33 @@ confirm_recreate() {
   [ "$answer" = "ja" ] || die "abgebrochen"
 }
 
+delete_disk() {
+  # volume deletion without root: the daemon deletes pool volumes
+  # (virsh vol-delete takes a vol-name-or-key-or-path); fall back to rm for
+  # overlays outside any pool that the invoking user owns
+  if virsh_cmd vol-delete "$DISK" >/dev/null 2>&1; then
+    return 0
+  fi
+  rm -f -- "$DISK" || true
+  if disk_exists; then
+    die "Overlay konnte nicht gelöscht werden: $DISK
+(virsh vol-delete und rm sind gescheitert - Dateirechte prüfen.)"
+  fi
+}
+
 main() {
   parse_args "$@"
   fetch_repo_files
   if [ "$DRY_RUN" -eq 0 ]; then
     need_cmd virsh
+    check_libvirt_access
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     if command -v virsh >/dev/null 2>&1 && vm_exists; then
       info "Dry-Run: VM $VM_NAME existiert - es würde der Update-Pfad laufen (hier: nur Rendering, keine Jobs)."
       render_agent
       if [ -n "$RELAY" ]; then
-        info "Update würde über die Job-Queue laufen: $RELAY (Lebensprobe, dann Datei-Jobs, Agent-Restart zuletzt)."
+        info "Update würde über die Job-Queue laufen: $RELAY (Lebensprobe, VM-Benutzer-Prüfung, dann Datei-Jobs, Agent-Restart zuletzt)."
       else
         info "ohne --relay/--submitter-token: nur die manuelle Anleitung, keine Jobs."
       fi
@@ -448,7 +538,7 @@ main() {
     if [ "$RECREATE" -eq 1 ]; then
       confirm_recreate
       virsh_cmd undefine "$VM_NAME" || die "virsh undefine fehlgeschlagen"
-      rm -f -- "$DISK" || die "Overlay konnte nicht gelöscht werden: $DISK"
+      delete_disk
       info "Alte VM verworfen, Overlay gelöscht - Neu-Anlage läuft."
       install_vm
     else

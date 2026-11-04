@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# vmadmin - admin UI of the vibe-sandbox VM on port 80 (host access only; NAT without DNAT)
+# vmadmin - admin UI of the sandbox-worker VM on port 80 (host access only; NAT without DNAT)
 # style like the relay admin UI (relay/templates/admin.html): dark theme, login card with
 # sessionStorage, hash navigation, native <dialog> modals, CSP nonce, 401 without challenge
 # (round 14: basic challenges trigger native browser login dialogs).
@@ -25,9 +25,9 @@ ADMIN_USERNAME = "admin"
 CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "agent-sandbox")
 TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
 ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
-TTYD_UNIT_PATH = "/etc/systemd/system/ttyd-vibe.service"
+TTYD_UNIT_PATH = "/etc/systemd/system/ttyd-worker.service"
 AGENT_SERVICE = "agent-sandbox-agent"
-TTYD_SERVICE = "ttyd-vibe"
+TTYD_SERVICE = "ttyd-worker"
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -89,14 +89,14 @@ def write_atomic(path, content, mode=0o600):
 
 def ttyd_unit_content(pw):
     # password stays in ExecStart plaintext (ttyd has no credential file; ps-readable -
-    # documented weakness as in the assessment; the VM has only the user vibe)
+    # documented weakness as in the assessment; the VM has only the user worker)
     return (
         "[Unit]\n"
         "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
         "After=network.target\n\n"
         "[Service]\n"
-        "User=vibe\n"
-        "ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -c vibe:" + pw + " -m 2 -w /home/vibe bash -l\n"
+        "User=worker\n"
+        "ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -c worker:" + pw + " -m 2 -w /home/worker bash -l\n"
         "Restart=on-failure\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
@@ -214,7 +214,7 @@ HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vibe-sandbox Verwaltung</title>
+<title>sandbox-worker Verwaltung</title>
 <style>
 :root{
   --bg:#0f1216;--panel:#171b21;--panel2:#1d222a;--line:#2a313b;--text:#e6e9ee;
@@ -279,7 +279,7 @@ label.field input{width:100%}
 </head>
 <body>
 <header>
-  <h1>vibe-sandbox <span>Verwaltung</span></h1>
+  <h1>sandbox-worker <span>Verwaltung</span></h1>
   <div class="muted" id="mode"></div>
   <nav id="nav">
     <button data-page="status">Status</button>
@@ -326,7 +326,7 @@ label.field input{width:100%}
     <h3 style="margin-top:0">Dienste</h3>
     <table><tbody>
       <tr><th>agent-sandbox-agent</th><td id="st-agent" class="mono">-</td></tr>
-      <tr><th>ttyd-vibe</th><td id="st-ttyd" class="mono">-</td></tr>
+      <tr><th>ttyd-worker</th><td id="st-ttyd" class="mono">-</td></tr>
     </tbody></table>
   </div>
 </section>
@@ -360,8 +360,8 @@ label.field input{width:100%}
   <div class="card">
     <div class="row">
       <button id="btn-restart-agent">agent-sandbox-agent neu starten</button>
-      <button id="btn-restart-ttyd">ttyd-vibe neu starten</button>
-      <span class="muted">läuft je als User vibe</span>
+      <button id="btn-restart-ttyd">ttyd-worker neu starten</button>
+      <span class="muted">läuft je als User worker</span>
     </div>
   </div>
   <h2>Agent-Journal <span class="muted">(letzte 30 Zeilen)</span></h2>
@@ -549,7 +549,7 @@ document.getElementById("btn-token").addEventListener("click", saveToken);
 document.getElementById("btn-ttyd").addEventListener("click", saveTtyd);
 document.getElementById("btn-pw").addEventListener("click", changePw);
 document.getElementById("btn-restart-agent").addEventListener("click", function(){ restartService("agent-sandbox-agent"); });
-document.getElementById("btn-restart-ttyd").addEventListener("click", function(){ restartService("ttyd-vibe"); });
+document.getElementById("btn-restart-ttyd").addEventListener("click", function(){ restartService("ttyd-worker"); });
 document.getElementById("btn-journal").addEventListener("click", refreshJournal);
 document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
 window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });

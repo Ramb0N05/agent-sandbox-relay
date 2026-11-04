@@ -54,6 +54,11 @@
 # kernel random(4) (/dev/urandom), GitHub REST contents API (raw download URLs).
 # German output, English comments/variables (PEP 8 convention, 18th round).
 set -euo pipefail
+# virsh/virt-install output is gettext-translated (libvirt ships .mo catalogs, e.g. de);
+# under a non-C locale "virsh domstate" prints e.g. "laufend" instead of "running" and
+# parsing breaks (observed 27th round). Force the C locale for all host tools; this
+# script's own messages stay German.
+export LC_ALL=C
 
 VM_NAME="sandbox-worker"
 LIBVIRT_URI="qemu:///system"
@@ -77,6 +82,7 @@ VM_USER="worker"
 ORIG_ARGS=()
 CONSOLE_RC=""
 SEED_ISO=""
+SELF_PATH=""   # absolute path of $0, resolved in main (used by the self-update)
 
 # repo files fetched to the VM (name in repo); all downloads stay in the temp dir
 
@@ -169,7 +175,7 @@ parse_args() {
   done
 }
 
-virsh_cmd() { virsh --connect "$LIBVIRT_URI" "$@"; }
+virsh_cmd() { LC_ALL=C virsh --connect "$LIBVIRT_URI" "$@"; }
 
 vm_exists() { virsh_cmd dominfo "$VM_NAME" >/dev/null 2>&1; }
 
@@ -223,25 +229,27 @@ check_self_update() {
   fi
   local remote_sha
   remote_sha="$(sha256sum "$remote" | awk '{print $1}')"
-  if [ ! -f "$0" ]; then
+  local self="$SELF_PATH"
+  if [ -z "$self" ]; then self="$0"; fi
+  if [ ! -f "$self" ]; then
     info "Self-Update-Check: \$0 ist keine Datei (z.B. per pipe ausgeführt) - Remote-sha256: ${remote_sha:0:12}..."
     return 0
   fi
   local local_sha
-  local_sha="$(sha256sum "$0" | awk '{print $1}')"
+  local_sha="$(sha256sum "$self" | awk '{print $1}')"
   if [ "$local_sha" = "$remote_sha" ]; then
     info "Self-Update: Skript ist aktuell (sha256 ${local_sha:0:12}...)."
     return 0
   fi
   info "Self-Update: Repo-Version abweichend (lokal ${local_sha:0:12}, remote ${remote_sha:0:12})."
   if [ "$SELF_UPDATE" -eq 1 ]; then
-    local bak="$0.bak-$(date +%Y%m%d-%H%M%S)"
-    cp -a "$0" "$bak" || die "Backup fehlgeschlagen: $bak"
-    install -m 0755 "$remote" "$0" || die "Ersetzen von $0 fehlgeschlagen (Rechte?)"
-    info "Self-Update: $0 durch die Repo-Version ersetzt (Backup: $bak) - starte mit Original-Argumenten neu."
-    exec bash "$0" "${ORIG_ARGS[@]}"
+    local bak="$self.bak-$(date +%Y%m%d-%H%M%S)"
+    cp -a "$self" "$bak" || die "Backup fehlgeschlagen: $bak"
+    install -m 0755 "$remote" "$self" || die "Ersetzen von $self fehlgeschlagen (Rechte?)"
+    info "Self-Update: $self durch die Repo-Version ersetzt (sha256 ${remote_sha:0:12}..., Backup: $bak) - starte mit Original-Argumenten neu."
+    exec bash "$self" "${ORIG_ARGS[@]}"
   else
-    info "Self-Update: Update mit --self-update (ersetzt $0 durch die Repo-Version, Backup inklusive)."
+    info "Self-Update: neuere Repo-Version vorhanden - Update mit: $self --self-update <bisherige Optionen> (ersetzt die Datei, Backup inklusive, startet danach neu)."
   fi
 }
 
@@ -336,7 +344,7 @@ console_run() {
     printf '%s\n' "$cmd"
     printf 'echo "%s=$?"\n' "$marker"
     sleep "$wait_s"
-  } | timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
+  } | LC_ALL=C timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
   # || true: while the VM is still booting there is no marker yet; without it pipefail
   # fails the assignment and set -e kills the script silently (bug, 26th round)
   CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$out" | tail -1 | cut -d= -f2)" || true
@@ -694,6 +702,10 @@ delete_disk() {
 
 main() {
   ORIG_ARGS=("$@")
+  case "$0" in
+    /*) SELF_PATH="$0" ;;
+    *)  SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;;
+  esac
   parse_args "$@"
   fetch_repo_files
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -708,7 +720,7 @@ main() {
   if [ "$DRY_RUN" -eq 1 ]; then
     if command -v virsh >/dev/null 2>&1 && vm_exists; then
       if [ "$RECREATE" -eq 1 ]; then
-        info "Dry-Run: VM $VM_NAME existiert - mit --recreate würde sie verworfen (virsh undefine + Overlay löschen: $DISK) und danach neu angelegt (Install-Pfad)."
+        info "Dry-Run: VM $VM_NAME existiert - mit --recreate würde sie verworfen (virsh destroy falls laufend, dann undefine + Overlay löschen: $DISK) und danach neu angelegt (Install-Pfad)."
         return 0
       fi
       info "Dry-Run: VM $VM_NAME existiert - es würde der Update-Pfad über die serielle Konsole laufen (virsh console --force --safe, keine Relay-API)."
@@ -722,6 +734,17 @@ main() {
   if vm_exists; then
     if [ "$RECREATE" -eq 1 ]; then
       confirm_recreate
+      # virsh(1): "undefine" on a RUNNING domain converts it to a transient domain
+      # WITHOUT stopping it - the transient keeps holding the disk, so virt-install's
+      # path_in_use check then fails with "already in use by other guests" (observed
+      # 27th round). Therefore: destroy first (immediate stop; data loss was confirmed
+      # with --recreate), then undefine, then delete the volume.
+      local rstate
+      rstate="$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)"
+      if [ -n "$rstate" ] && [ "$rstate" != "shut off" ]; then
+        info "VM ist '$rstate' - virsh destroy (sofortiges Beenden, virsh(1) destroy)."
+        virsh_cmd destroy "$VM_NAME" || die "virsh destroy fehlgeschlagen"
+      fi
       virsh_cmd undefine "$VM_NAME" || die "virsh undefine fehlgeschlagen"
       delete_disk
       info "Alte VM verworfen, Overlay gelöscht - Neu-Anlage läuft."

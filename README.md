@@ -76,7 +76,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (sechsundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
+  (siebenundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -93,7 +93,12 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   serial-getty@ttyS0), bis cloud-init fertig ist (cloud-init status --wait)
   UND der einmalige power_state-Neustart durch ist (boot_id-Wechsel); erst
   wenn agent/vm-admin/ttyd aktiv sind, werden die Initialwerte ausgegeben
-  und die Seed-vdb abgehängt (live+config). Image-Pfade kommen aus der libvirt-Konfig
+  und die Seed-vdb abgehängt (live+config). 27. Runde: LC_ALL=C für alle
+  Host-Tools (virsh-Ausgabe ist gettext-übersetzt, z.B. domstate "laufend"
+  statt "running" unter de_DE); --recreate macht jetzt virsh destroy VOR undefine
+  (undefine einer laufenden Domain macht sie nur transient und stoppt sie nicht -
+  die Disk blieb danach "in use" und virt-install brach mit path_in_use ab);
+  Self-Update arbeitet mit dem absoluten Skript-Pfad. Image-Pfade kommen aus der libvirt-Konfig
   (virsh pool-dumpxml default -> <target><path>), nicht aus einem
   hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
   KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt

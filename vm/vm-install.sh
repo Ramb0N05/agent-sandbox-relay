@@ -124,7 +124,7 @@ init_log() {
   fi
 }
 
-bar_total=0 bar_done=0
+bar_total=0 bar_done=0 bar_open=0
 bar() {
   # overall progress bar: bar <done> <total> <label>  (einzeilig mit \r ueberschreiben)
   local done="$1" total="$2" label="$3" pct filled i
@@ -133,8 +133,12 @@ bar() {
   pct=$((done * 100 / total))
   filled=$((done * 20 / total))
   printf '\r%s[%s%s] %3d%%  %s%s' "$C_PHASE" "$(printf '#%.0s' $(seq 1 $filled))" "$(printf ' %.0s' $(seq 1 $((20 - filled))))" "$pct" "$label" "$C_OFF"
-  if [ "$done" -ge "$total" ]; then printf '\n'; fi
+  if [ "$done" -ge "$total" ]; then printf '\n'; bar_open=0; else bar_open=1; fi
   log_line "PROGRESS: $done/$total ($pct%%) $label"
+}
+bar_nl() {
+  # offene Bar-Zeile vor normaler Ausgabe abschliessen, sonst landet der Text in der Bar-Zeile
+  if [ "$bar_open" -eq 1 ]; then printf '\n'; bar_open=0; fi
 }
 spin_tick() {
   # interaktiver Warte-Indicator im Terminal: spin_tick <label>
@@ -145,9 +149,9 @@ spin_tick() {
 }
 spin_clear() { printf '\r%80s\r' ""; }
 
-die() { log_line "FEHLER: $1"; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
-info() { printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
-warn() { printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
+die() { log_line "FEHLER: $1"; bar_nl; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+info() { bar_nl; printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
+warn() { bar_nl; printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
 spin_i=0
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "benötigtes Werkzeug fehlt: $1 (pacman -S $1 oder Paket nachtragen)"; }
@@ -164,7 +168,7 @@ gen_password() {
 
 usage() {
   cat <<'EOF'
-vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren (Update nur über serielle Konsole, kein Relay-API-Zugriff)
+vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren (Warten+Update nur über die vmadmin-API, kein Relay-API-Zugriff)
 
   --vm-name NAME         libvirt-Name der VM (Default: sandbox-worker)
   --connect URI          libvirt-URI (Default: qemu:///system)
@@ -522,7 +526,7 @@ install_vm() {
       info "Hinweis: Overlay existiert bereits: $DISK (echte Anlage bricht hier ab, --recreate für Neu-Anlage)"
     fi
     info "Dry-Run: würde Seed-ISO bauen (genisoimage/xorriso, volid cidata, user-data+meta-data, nur temporaer) und virt-install starten ($MEM_MIB MiB, $VCPUS vCPUs, Disk $DISK_GB GiB auf $DISK, Backing $BACKING, Seed als vdb, --console pty,target_type=serial, --events on_reboot=restart,on_poweroff=destroy,on_crash=restart, einphasig)."
-    info "Dry-Run: danach Warten auf cloud-init + power_state-Neustart über die serielle Konsole, dann Seed detach, erst dann Initialwerte."
+    info "Dry-Run: danach Warten auf cloud-init + power_state-Neustart über die vmadmin-API, dann Seed detach, erst dann Initialwerte."
     print_initial_values
     return 0
   fi
@@ -585,6 +589,7 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     fi
   fi
   print_initial_values "$ip"
+  bar 6 6 "Fertig (Neu-Anlage)"
 }
 
 vm_ip() {
@@ -738,6 +743,8 @@ confirm_recreate() {
   info "! Betroffen: $DISK"
   info "! Alles in der VM (Dateien, Jobs-Results, Konfiguration) ist weg."
   info "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  # VMM-Hinweis VOR der Weiter?-Abfrage (sonst sieht man ihn erst nach dem Ja)
+  warn "Falls die VM in virt-manager geöffnet ist: bitte das VM-Fenster JETZT schliessen - beim Destroy/Undefine mit offenem Fenster kann das virt-manager-GUI einfrieren (bekannte Upstream-Bugs)."
   [ "$ASSUME_YES" -eq 1 ] && return 0
   local answer
   printf 'Weiter? Wort "ja" eingeben: '
@@ -810,7 +817,6 @@ main() {
       # bestehende Konsolen-Sessions - wir trennen die Session vor dem Destroy, damit das
       # VMM-Fenster nicht einfriert. (Kein Datenzugriff ueber die Konsole, nur Session-Kick.)
       virsh_cmd console "$VM_NAME" --force </dev/null >/dev/null 2>&1 || true
-      warn "Falls die VM in virt-manager geoeffnet ist: bitte das VM-Fenster vorher schliessen - beim Destroy/Undefine mit offenem Fenster kann das virt-manager-GUI einfrieren (bekannte Upstream-Bugs)."
       info "Konsolen-Session der VM getrennt (virsh console --force), falls eine bestand."
       if [ -n "$rstate" ] && [ "$rstate" != "shut off" ]; then
         info "VM ist '$rstate' - virsh destroy (sofortiges Beenden, virsh(1) destroy)."
@@ -821,7 +827,7 @@ main() {
       info "Alte VM verworfen, Overlay gelöscht - Neu-Anlage läuft."
       install_vm
     else
-      info "VM $VM_NAME existiert - Update-Pfad (serielle Konsole)."
+      info "VM $VM_NAME existiert - Update-Pfad (vmadmin-API, POST /admin/api/update)."
       update_vm
     fi
   else

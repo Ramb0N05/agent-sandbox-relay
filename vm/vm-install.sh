@@ -73,9 +73,9 @@ vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren
   --connect URI          libvirt-URI (Default: qemu:///system)
   --disk PATH           Overlay-qcow2 (Default: /var/lib/libvirt/images/sandbox-worker.qcow2,
                          Standardverzeichnis des libvirt-Default-Pools). Für ein eigenes
-                         Verzeichnis gilt: das Verzeichnis muss ein bekannter libvirt-
-                         Storage-Pool sein oder das Overlay muss schon existieren
-                         (virt-install legt Volumes nur über Pools an).
+                         Verzeichnis gilt: virt-install legt unbekannte Verzeichnisse als
+                         automatisch verwalteten dir-Pool an (Volumes entstehen nur über
+                         die Storage-Pool-API).
   --backing PATH        Basisimage (Default: /var/lib/libvirt/images/
                          Arch-Linux-x86_64-cloudimg.qcow2 - Pfad des Arch-Cloud-Images
                          im Standardverzeichnis; realen Pfad bei Bedarf angeben). Muss

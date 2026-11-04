@@ -138,7 +138,11 @@ Schreibzugriff auf /var/lib/libvirt/boot im eigenen Nutzer-Cache
 für --disk: das Verzeichnis muss ein bekannter libvirt-Storage-Pool sein
 oder das Overlay muss existieren (virt-install legt Volumes nur über
 Pools an). Overlay-Löschung bei --recreate über virsh vol-delete
-(vol-name-or-key-or-path, klappt ohne Root), mit rm als Fallback.
+(vol-name-or-key-or-path, klappt ohne Root), mit rm als Fallback. Custom-Pfade für --disk: unbekannte
+Verzeichnisse verwaltet virt-install als automatisch angelegten dir-Pool
+(diskbackend.py manage_path: "If path is not managed, try to create a
+storage pool to probe the path"); Volumes entstehen immer über die
+Storage-Pool-API.
 
 Installation (VM existiert nicht): fetch der user-data, des Agenten, von
 vmadmin und der Units vom aktuellen worker-Zweig; Ersetzen von

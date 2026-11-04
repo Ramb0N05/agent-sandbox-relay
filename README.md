@@ -76,16 +76,26 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (neunzehnte Runde). Install: holt den aktuellen worker-Zweig per
-  raw.githubusercontent, ersetzt die drei user-data-Platzhalter, generiert
-  fehlende Passwörter aus /dev/urandom (24 alphanumerische Zeichen,
-  random(4)), legt die VM per virt-install an (identisch zu
-  vm/virt-install.sh, zusätzlich --noautoconsole, damit das Skript
-  zurückkehrt) und wartet auf die DHCP-Lease (virsh net-dhcp-leases mit
-  der MAC aus domiflist). Update: VM-Daten bleiben unberührt, Dateien
-  wandern über die Job-Queue (fünfzehnte Runde) in die VM; ohne
-  erreichbaren Agent druckt das Skript die manuelle serielle Prozedur.
-  Details und Parameter: Abschnitt "VM anlegen oder aktualisieren" unten.
+  (fünfundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
+  raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
+  bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
+  generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
+  Zeichen, random(4)), legt die VM per virt-install an (identisch zu
+  vm/virt-install.sh, zusätzlich --noautoconsole und --console
+  pty,target_type=serial für die serielle Konsole) und wartet über die
+  serielle Konsole (virsh console --force --safe, Autologin worker per
+  agetty --autologin auf serial-getty@ttyS0), bis cloud-init fertig ist
+  (cloud-init status --wait) UND der einmalige power_state-Neustart durch
+  ist (boot_id-Wechsel); erst wenn agent/vm-admin/ttyd aktiv sind, werden
+  die Initialwerte ausgegeben. Image-Pfade kommen aus der libvirt-Konfig
+  (virsh pool-dumpxml default -> <target><path>), nicht aus einem
+  hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
+  KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt
+  die Dateien selbst aus dem öffentlichen Repo nach /tmp/vm-update,
+  gerenderte Dateien (Agent, ttyd-Unit) kommen als base64-Heredoc über
+  die Konsole. Self-Update: sha256-Vergleich mit vm/vm-install.sh im Repo
+  (--self-update ersetzt $0, Backup inklusive). Details und Parameter:
+  Abschnitt "VM anlegen oder aktualisieren" unten.
 
 ## Platzhalter vor dem ersten Boot ersetzen
 
@@ -127,83 +137,88 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   "gzip -c <datei> | base64 -w0"), Output im Result ist der Base64-Text
   (Deckel 8 MiB).
 
-## VM anlegen oder aktualisieren (vm/vm-install.sh, einundzwanzigste Runde)
+## VM anlegen oder aktualisieren (vm/vm-install.sh, fünfundzwanzigste Runde)
 
-Alle Pfade sind Parameter mit dokumentierten Defaults, kein Projektpfad
-im Skript: --vm-name (sandbox-worker), --connect (qemu:///system), --disk
-(/var/lib/libvirt/images/sandbox-worker.qcow2 - Standardverzeichnis des
-libvirt-Default-Pools, virtinst _preferred_default_pool_path), --backing
-(/var/lib/libvirt/images/Arch-Linux-x86_64-cloudimg.qcow2 - Arch-Cloud-
-Image im Standardverzeichnis, realen Pfad bei Bedarf angeben; muss für
-den QEMU-Laufzeitbenutzer lesbar sein), --disk-gb (64), --memory (8192),
---vcpus (4), --user-data (leer - die gerenderte user-data liegt nur
-temporär im Skript-Tempverzeichnis, nichts unter /root; mit Angabe wird
-eine zusätzliche dauerhafte Kopie unter dem Pfad abgelegt), --raw-base
-(raw.githubusercontent.com, Branch worker). Weitere Optionen: --domain
-(Relay-Endpoint, optional - ohne Angabe bleibt der Platzhalter in der
-user-data und das Endpoint wird nach dem Boot über die vmadmin-UI
-gesetzt), --worker-token, --ttyd-password, --admin-password,
---relay, --submitter-token, --recreate, --yes, --dry-run.
+Alle Pfade sind Parameter; die Image-Pfade kommen jetzt aus der
+libvirt-Konfiguration statt aus einem hartkodierten Default: ohne --disk/
+--backing liest das Skript den Default-Pool zur Laufzeit aus
+`virsh --connect <URI> pool-dumpxml default` (<target><path> in der
+Pool-XML, libvirt formatstorage.html; persistente Definition
+/etc/libvirt/storage/default.xml) und setzt <pool>/sandbox-worker.qcow2
+bzw. <pool>/Arch-Linux-x86_64-cloudimg.qcow2. Im Dry-Run ohne erreichbares
+libvirt greift der dokumentierte Standard /var/lib/libvirt/images
+(virtinst _preferred_default_pool_path). Weitere Optionen: --vm-name
+(sandbox-worker), --connect (qemu:///system), --disk-gb (64), --memory
+(8192), --vcpus (4), --user-data (leer - die gerenderte user-data und alle
+heruntergeladenen worker-Dateien liegen nur temporär in mktemp -d und
+werden per trap entfernt; dauerhaft bleiben nur die Images; mit Angabe
+wird eine zusätzliche dauerhafte Kopie unter dem Pfad abgelegt),
+--raw-base (raw.githubusercontent.com, Branch worker), --domain (optional),
+--worker-token, --ttyd-password, --admin-password, --self-update,
+--recreate, --yes, --dry-run. --relay/--submitter-token gibt es nicht mehr:
+das Skript spricht die Relay-API an keiner Stelle an.
 
-Ohne Root lauffähig: Der Zugang läuft über den libvirt-Socket (Mitglieder
-der Gruppe libvirt haben passwortlosen Zugriff auf den RW-Socket, Arch
-Wiki "Libvirt"); das Overlay wird über die Storage-Pool-API angelegt
-(virtinst build_vol_install mit backing_store, die Datei erzeugt libvirtd
-im Pool), das Cloud-init-Seed-ISO baut virt-install bei fehlendem
-Schreibzugriff auf /var/lib/libvirt/boot im eigenen Nutzer-Cache
-(virtinst/install/installertreemedia.py make_scratchdir, Mode 0751).
-Custom-Pfade für --disk: unbekannte Verzeichnisse verwaltet virt-install
-als automatisch angelegten dir-Pool (diskbackend.py manage_path: "If
-path is not managed, try to create a storage pool to probe the path");
-Volumes entstehen immer über die Storage-Pool-API (cli.py: pool+size+
-backing_store -> DeviceDisk.build_vol_install, "Handles storage creation
-via libvirt APIs", diskbackend.py). Overlay-Löschung bei --recreate über
-virsh vol-delete (vol-name-or-key-or-path, klappt ohne Root), mit rm
-als Fallback.
+Ohne Root läuft es wie gehabt: libvirt-Socket (Gruppe libvirt, Arch
+Wiki), Overlay über die Storage-Pool-API (virtinst build_vol_install mit
+backing_store), Seed-ISO im virtinst-Nutzer-Scratchdir (make_scratchdir,
+0751), Custom-Pfade als automatisch verwalteter dir-Pool (diskbackend.py
+manage_path), Overlay-Löschung über virsh vol-delete.
 
 Installation (VM existiert nicht): fetch der user-data, des Agenten, von
-vmadmin und der Units vom aktuellen worker-Zweig; Ersetzen von
-<agent-sandbox-relay-domain> (nur mit --domain, sonst bleibt der
-Platzhalter), <ttyd-passwort> und <vm-admin-passwort>
-(ohne Angabe generiert, 24 alphanumerische Zeichen aus /dev/urandom).
-Danach virt-install (plus --noautoconsole, virt-install(1)), Warteschleife
-bis 120 s auf die DHCP-Lease (virsh net-dhcp-leases default <mac>; die
-Lease-Tabelle druckt nach dem Header eine Trennlinie, das Skript matcht
-die MAC-Zeile statt eine Zeilennummer zu raten - libvirt vsh-table.c) und
-Ausgabe der Initialwerte in der Shell (IP, Passwörter, Konsole-Hinweis,
-Autologin worker). Die VM startet nach Abschluss von cloud-init einmal
-selbst neu (power_state, einmalig pro Instanz). Ohne --worker-token läuft
-der Agent mit dem Konstanten-Fallback (401 auf der Queue); das Token wird
-nach dem Boot über die vmadmin-UI gesetzt (Datei geht der Konstante vor).
+vmadmin und der Units vom aktuellen worker-Zweig (nur temporär); Ersetzen
+von <agent-sandbox-relay-domain> (nur mit --domain), <ttyd-passwort> und
+<vm-admin-passwort> (sonst generiert aus /dev/urandom, random(4)). Danach
+virt-install (zusätzlich --noautoconsole und --console
+pty,target_type=serial: serielle Konsole auf einem Host-PTY, erreichbar
+per "virsh console NAME" - virt-install(1); Soll-XML in
+vm/domain-xml-target.xml). Die VM bootet serial-getty@ttyS0 mit agetty
+--autologin worker (user-data), die Konsole loggt also von selbst als
+worker ein (agetty(8) --autologin). Dann wartet das Skript über die
+Konsole: erst `cloud-init status --wait` (blockiert bis cloud-init fertig;
+Exit 0 ok / 1 Crash / 2 behebbare Fehler - cloud-init CLI-Referenz) bzw.
+"status: done", dann der einmalige power_state-Neustart (Modul läuft once
+per instance nach allen anderen Config-Modulen - cloud-init Modul-
+Referenz; erkennbar am Wechsel von /proc/sys/kernel/random/boot_id, das
+sich genau einmal pro Boot ändert - Kernel-sysctl-Doku), dann nach dem
+Neustart erneut cloud-init done plus `systemctl is-active
+agent-sandbox-agent vm-admin ttyd-worker` und `systemctl is-system-running`
+(running/degraded). Erst wenn die VM so vollständig einsatzbereit ist,
+kommen DHCP-Lease (net-dhcp-leases; MAC-Zeile matchen statt Zeilennummer -
+vsh-table.c) und die Initialwerte (IP, Passwörter, Endpoint, Konsole).
+cloud-init legt /var/lib/cloud/instance/boot-finished als letzte Datei an
+(cloud-init internal files).
 
-Update (VM existiert, ohne --recreate): keine VM-Daten werden verändert.
-Voraussetzungen: --relay und --submitter-token für den Queue-Weg (das
-Skript ist Absender: POST /jobs und POST /files gehören zur
-Submitter-Rolle; das Worker-Token gehört zum Agenten in der VM und
-verlässt sie nie). --domain ist optional: fehlt es, liest das Skript den
-laufenden Endpoint der VM (Endpoint-Datei vor ENDPOINT-Konstante des
-installierten Agenten) und rendert den neuen Agent damit; ist auch dort
-nur der Platzhalter konfiguriert, bleibt der Platzhalter im Agent und
-das Endpoint wird über die vmadmin-UI gesetzt. Ablauf: Lebensprobe (echo
-vm-install-probe), Prüfung des VM-Benutzers (Job id -un muss worker
-liefern - eine VM der alten Bereitstellung wird abgewiesen), dann je
-Datei POST /files -> Job FETCH nach /home/worker/.vm-update/ ->
-sudo install (vmadmin und Agent als worker:worker 0700, Units als
-root:root 0644, den Defaults von cloud-init write_files entsprechend),
-daemon-reload, vmadmin-Neustart; die ttyd-Unit wird nur mit
---ttyd-password angetastet (das Passwort steckt in ExecStart), der
-Agent-Restart läuft als letzter Job (nohup mit sleep 3, damit das Result
-noch gepostet wird). Worker-Token-Datei, Admin-Hash und ttyd-Passwort
-bleiben unberührt. Beantwortet der Agent keine Jobs, druckt das Skript
-die manuelle Prozedur für die serielle Konsole (virsh console, Autologin
-worker, Fetch direkt vom öffentlichen Repo) und endet mit Exit-Code 3;
-ohne --relay/--submitter-token endet es mit Exit-Code 2.
+Update (VM existiert, ohne --recreate): ausschließlich über die serielle
+Konsole, keine Relay-API-Zugriffe (kein POST /jobs, kein /files, keine
+Token): `virsh console --force --safe` (--force trennt verwaiste Sitzungen,
+--safe erzwingt exclusive access - virsh(1)). Ablauf: Benutzer prüfen
+(id -un muss worker liefern, sonst --recreate-Hinweis); ohne --domain den
+laufenden Endpoint aus der VM lesen (Endpoint-Datei vor ENDPOINT-Konstante
+des installierten Agenten); dann lädt die VM die ungeänderten Dateien
+selbst aus dem öffentlichen Repo nach /tmp/vm-update (curl ist per
+cloud-init installiert, packages in der user-data); gerenderte Dateien
+(Agent mit Endpoint, ttyd-Unit nur mit --ttyd-password wegen ExecStart)
+kommen als base64-Heredoc über die Konsole (Zeilen <= 76 Zeichen mit
+base64(1) -w 76, unter der kanonischen Zeilenlänge des tty); dann sudo
+install (vmadmin und Agent worker:worker 0700, Units root:root 0644 wie
+die cloud-init write_files-Defaults), daemon-reload, vm-admin- und
+ttyd-Neustart, Agent-Restart zuletzt verzögert über einen transienten
+Timer (systemd-run --on-active=3s, systemd-run(1)), Verifikation per
+systemctl is-active. Worker-Token-Datei, Admin-Hash und ttyd-Passwort
+bleiben unberührt.
+
+Self-Update: vor jedem echten Lauf vergleicht das Skript sha256($0) mit der
+Repo-Kopie unter $RAW_BASE/vm/vm-install.sh (raw.githubusercontent.com liefert
+Rohbytes; GitHub REST Contents API: download_url = raw.githubusercontent.com,
+docs.github.com/en/rest/repos/contents). Bei Abweichung nur Hinweis; mit
+--self-update wird $0 durch die Repo-Version ersetzt (Backup $0.bak-<ts>)
+und das Skript startet mit den Original-Argumenten neu.
 
 --recreate: verwirft die Domain (virsh undefine) und löscht das Overlay.
 DAS LÖSCHT ALLE DATEN DER VM (cloud-init läuft pro Overlay nur einmal,
 per-instance); Bestätigung mit dem Wort "ja" (oder --yes), danach wie
-Installation. --dry-run testet fetch und Ersetzung ohne libvirt (auch
-ohne virsh/virt-install lauffähig) und legt nichts an. Eine bestehende
-VM nur umbenennen (ohne Neu-Anlage): virsh domrename - nur im
-ausgeschalteten Zustand (virsh(1)); der Benutzername steht in der
-cloud-init und ändert sich nur bei einer Neu-Anlage.
+Installation. --dry-run testet fetch und Ersetzung ohne libvirt und ohne
+Konsolenzugriff und legt nichts an. Eine bestehende VM nur umbenennen:
+virsh domrename - nur im ausgeschalteten Zustand (virsh(1)); der
+Benutzername steht in der cloud-init und ändert sich nur bei einer
+Neu-Anlage.

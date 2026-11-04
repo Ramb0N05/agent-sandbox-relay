@@ -1,0 +1,11 @@
+[Unit]
+Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)
+After=network.target
+
+[Service]
+User=worker
+ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -c worker:<ttyd-passwort> -m 2 -w /home/worker bash -l
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,7 @@
   <devices>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2'/>
-      <source file='/mnt/GamesSSD0/libvirt/images/vibe-sandbox.qcow2'/>
+      <source file='/var/lib/libvirt/images/sandbox-worker.qcow2'/>
       <target dev='vda' bus='virtio'/>
     </disk>
     <interface type='network'>

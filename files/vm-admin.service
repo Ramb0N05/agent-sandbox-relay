@@ -1,9 +1,9 @@
 [Unit]
-Description=vibe-sandbox VM-Verwaltung (Port 80, nur Host-Zugriff)
+Description=sandbox-worker VM-Verwaltung (Port 80, nur Host-Zugriff)
 After=network.target
 
 [Service]
-User=vibe
+User=worker
 ExecStart=/usr/local/bin/vmadmin
 Restart=always
 RestartSec=5

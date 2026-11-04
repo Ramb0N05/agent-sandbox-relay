@@ -114,6 +114,7 @@ table.rwd td.cmdcell{font-size:.8rem}
     <button data-page="status">Status</button>
     <button data-page="tokens">Tokens</button>
     <button data-page="jobs">Jobs</button>
+    <button data-page="dateien">Dateien</button>
     <button data-page="audit">Protokoll</button>
     <button data-page="api">API-Doku</button>
     <button data-page="einstellungen">Einstellungen</button>
@@ -169,8 +170,33 @@ table.rwd td.cmdcell{font-size:.8rem}
 
 <section class="page" id="page-jobs">
   <h2>Jobs je Submitter</h2>
+  <div class="card">
+    <h3 style="margin-top:0">Manueller Job anlegen</h3>
+    <label class="field">Submitter
+      <select id="newjob-sub"></select></label>
+    <label class="field">Befehl (cmd)
+      <textarea id="newjob-cmd" rows="3" style="width:100%" placeholder="z.B. echo hallo"></textarea></label>
+    <div class="row"><button class="primary" id="btn-newjob">Job anlegen</button></div>
+  </div>
   <div class="row"><button id="btn-jobs-refresh">Aktualisieren</button></div>
   <div id="jobs"></div>
+</section>
+
+<section class="page" id="page-dateien">
+  <h2>Dateien je Submitter</h2>
+  <div class="card">
+    <h3 style="margin-top:0">Manuelle Datei anlegen</h3>
+    <label class="field">Submitter
+      <select id="newfile-sub"></select></label>
+    <label class="field">Name (optional)
+      <input id="newfile-name" maxlength="128" placeholder="z.B. config.txt"></label>
+    <label class="field">Inhalt (Base64)
+      <textarea id="newfile-content" rows="4" style="width:100%" placeholder="base64-kodierter Inhalt"></textarea></label>
+    <div class="row"><button class="primary" id="btn-newfile">Datei anlegen</button></div>
+  </div>
+  <p class="muted">queued: Inhalt per Dialog vollstaendig sichtbar; uebertragen: nur Pfad (Deckel wie bei Jobs: <span id="file-deckel" class="mono"></span>).</p>
+  <div class="row"><button id="btn-files-refresh">Aktualisieren</button></div>
+  <div id="files"></div>
 </section>
 
 <section class="page" id="page-audit">
@@ -274,6 +300,15 @@ table.rwd td.cmdcell{font-size:.8rem}
   <div class="dlgrow">
     <button id="dlg-submitter-cancel">Abbrechen</button>
     <button class="primary" id="dlg-submitter-ok">Anlegen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-file">
+  <h3 id="dlg-file-title">Datei</h3>
+  <p class="muted" id="dlg-file-meta"></p>
+  <pre id="dlg-file-content" class="mono"></pre>
+  <div class="dlgrow">
+    <button class="primary" id="dlg-file-close">Schliessen</button>
   </div>
 </dialog>
 
@@ -430,7 +465,7 @@ function dlgAddSubmitter(workers){
 }
 
 /* ---------- Seitennavigation ---------- */
-var PAGES = ["login", "status", "tokens", "jobs", "audit", "api", "einstellungen"];
+var PAGES = ["login", "status", "tokens", "jobs", "dateien", "audit", "api", "einstellungen"];
 function showPage(name){
   if (name === "logout"){ logout(); return; }
   PAGES.forEach(function(p){
@@ -445,6 +480,7 @@ function showPage(name){
   if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, 5000); } }
   if (name === "tokens"){ refreshTokens(); }
   if (name === "jobs"){ refreshJobs(); }
+  if (name === "dateien"){ refreshFiles(); }
   if (name === "audit"){ refreshAudit(); }
   if (name === "api" && !apiDocLoaded){ loadApiDoc(); }
   if (name === "einstellungen"){ refreshSettings(); }
@@ -566,6 +602,7 @@ async function del(tid, role, name){
 async function refreshJobs(){
   var d;
   try { d = await api("/admin/api/jobs"); } catch (e){ return; }
+  fillSubmitterSelects(d.submitters);
   var box = document.getElementById("jobs");
   box.innerHTML = "";
   d.submitters.forEach(function(s){
@@ -725,6 +762,89 @@ document.getElementById("dlg-token-copy").addEventListener("click", function(){
   if (navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(t.split("\n").pop()).then(function(){ toast("kopiert"); }, function(){ toast("Kopieren nicht möglich - manuell markieren"); });
   } else { toast("Kopieren nicht möglich - manuell markieren"); }
+});
+function fillSubmitterSelects(subs){
+  ["newjob-sub", "newfile-sub"].forEach(function(id){
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = "";
+    (subs || []).forEach(function(s){
+      var o = document.createElement("option");
+      o.value = s.id; o.textContent = s.name + " (" + s.id.slice(0, 8) + ")";
+      sel.appendChild(o);
+    });
+  });
+}
+async function refreshFiles(){
+  var d;
+  try { d = await api("/admin/api/files"); } catch (e){ return; }
+  fillSubmitterSelects(d.submitters);
+  document.getElementById("file-deckel").textContent = d.deckel_uebertragen;
+  var box = document.getElementById("files");
+  box.innerHTML = "";
+  d.submitters.forEach(function(g){
+    var h = document.createElement("h3");
+    h.textContent = g.name + " (" + g.id.slice(0, 8) + ")";
+    box.appendChild(h);
+    var queued = g.queued || [];
+    var done = g.uebertragen || [];
+    if (!queued.length && !done.length){
+      var p = document.createElement("p"); p.className = "muted"; p.textContent = "keine Dateien"; box.appendChild(p); return;
+    }
+    var tbl = document.createElement("table");
+    tbl.className = "rwd";
+    tbl.innerHTML = "<thead><tr><th>Zeit (lokal)</th><th>ID</th><th>Groesse</th><th>Status</th><th>Pfad/Inhalt</th><th></th></tr></thead>";
+    var tb = document.createElement("tbody");
+    queued.forEach(function(f){
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + fmtTs(f.ts) + "</td><td class='mono'>" + f.id + "</td><td>" + f.size + " B</td><td>queued</td><td class='muted'>-</td>";
+      var td = document.createElement("td");
+      var b = document.createElement("button"); b.textContent = "Ansehen";
+      b.addEventListener("click", function(){ showFile(f.id); });
+      td.appendChild(b); tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+    done.forEach(function(f){
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + fmtTs(f.ts) + "</td><td class='mono'>" + f.id + "</td><td>" + f.size + " B</td><td>uebertragen x" + f.delivered + "</td><td class='mono'>" + esc(f.path || "?") + "</td><td></td>";
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    box.appendChild(tbl);
+  });
+}
+function showFile(fid){
+  api("/admin/api/files/" + encodeURIComponent(fid)).then(function(d){
+    document.getElementById("dlg-file-title").textContent = "Datei " + d.id;
+    document.getElementById("dlg-file-meta").textContent = d.size + " B, Submitter: " + (d.submitter || "?") + (d.content_gekuerzt ? " (gekuerzt)" : "");
+    document.getElementById("dlg-file-content").textContent = d.content;
+    document.getElementById("dlg-file").showModal();
+  }).catch(function(e){ toast("Datei nicht ladbar: " + e.message); });
+}
+document.getElementById("dlg-file-close").addEventListener("click", function(){ document.getElementById("dlg-file").close(); });
+document.getElementById("btn-files-refresh").addEventListener("click", refreshFiles);
+document.getElementById("btn-newjob").addEventListener("click", async function(){
+  var cmd = document.getElementById("newjob-cmd").value;
+  var sid = document.getElementById("newjob-sub").value;
+  if (!cmd.trim()){ toast("cmd leer"); return; }
+  var ok = await showConfirm("Job anlegen", "Job für Submitter " + sid + " anlegen?");
+  if (!ok) return;
+  await api("/admin/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cmd: cmd, submitter_id: sid})});
+  document.getElementById("newjob-cmd").value = "";
+  toast("Job angelegt");
+  refreshJobs();
+});
+document.getElementById("btn-newfile").addEventListener("click", async function(){
+  var sid = document.getElementById("newfile-sub").value;
+  var name = document.getElementById("newfile-name").value;
+  var content = document.getElementById("newfile-content").value;
+  if (!content.trim()){ toast("Inhalt leer"); return; }
+  var ok = await showConfirm("Datei anlegen", "Datei für Submitter " + sid + " anlegen?");
+  if (!ok) return;
+  await api("/admin/api/files", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({submitter_id: sid, name: name, content_b64: content})});
+  document.getElementById("newfile-content").value = "";
+  toast("Datei angelegt");
+  refreshFiles();
 });
 document.querySelectorAll("nav button").forEach(function(b){ b.addEventListener("click", function(){ showPage(b.dataset.page); }); });
 window.addEventListener("hashchange", function(){ if (PW){ showPage(pageFromHash()); } });

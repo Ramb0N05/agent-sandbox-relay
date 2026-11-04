@@ -31,7 +31,10 @@ async def upload_file(request: Request, authorization: str | None = Header(None)
         raise HTTPException(status_code=413, detail="Speicherbudget erreicht")
     store.data_bytes += len(enc)
     fid = "f" + uuid.uuid4().hex[:12]
-    store.files[fid] = {"id": fid, "enc": enc, "size": len(raw), "size_enc": len(enc), "ts": time.time()}
+    store.files[fid] = {"id": fid, "enc": enc, "size": len(raw), "size_enc": len(enc), "ts": time.time(),
+                       "submitter_id": rec["id"] if role == "submitter" else None,
+                       "submitter": rec["name"] if role == "submitter" else None,
+                       "delivered": 0, "path": None}
     if len(store.files) > config.datei_store_eintraege():
         _, old = store.files.popitem(last=False)  # limit: oldest files dropped first
         store.data_bytes -= len(old["enc"])

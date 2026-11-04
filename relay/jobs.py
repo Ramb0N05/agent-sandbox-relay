@@ -38,6 +38,18 @@ async def submit(job: Job, request: Request, authorization: str | None = Header(
     return {"id": jid}
 
 
+def _mark_file_delivery(j):
+    # cmd "FETCH <fid> <zielpfad>": Datei als uebertragen markieren + Zielpfad merken
+    # (damit die Admin-UI uebertragene Dateien nur mit Pfad anzeigt)
+    parts = (j.get("cmd") or "").split()
+    if len(parts) >= 3 and parts[0] == "FETCH":
+        rec = store.files.get(parts[1])
+        if rec is not None:
+            rec["delivered"] = rec.get("delivered", 0) + 1
+            rec["path"] = parts[2]
+            store.audit("file_deliver", fid=rec["id"], path=parts[2], jid=j["id"])
+
+
 def _take_queued(worker_id):
     # only status=="queued": the worker skips paused jobs
     for j in store.jobs.values():
@@ -54,8 +66,9 @@ async def next_job(request: Request, authorization: str | None = Header(None)):
     ev.clear()  # clear first, then pick: no lost wakeup
     j = _take_queued(w["id"])
     if j:
+        _mark_file_delivery(j)
         store.audit("deliver", jid=j["id"], worker=w["name"])
-        return {"id": j["id"], "cmd": j["cmd"]}
+        return {"id": j["id"], "cmd": j["cmd"], "submitter": j.get("submitter")}
     try:
         await asyncio.wait_for(ev.wait(), timeout=config.poll_seconds())
     except asyncio.TimeoutError:
@@ -64,8 +77,9 @@ async def next_job(request: Request, authorization: str | None = Header(None)):
         return Response(status_code=204)
     j = _take_queued(w["id"])
     if j:
+        _mark_file_delivery(j)
         store.audit("deliver", jid=j["id"], worker=w["name"])
-        return {"id": j["id"], "cmd": j["cmd"]}
+        return {"id": j["id"], "cmd": j["cmd"], "submitter": j.get("submitter")}
     return Response(status_code=204)
 
 

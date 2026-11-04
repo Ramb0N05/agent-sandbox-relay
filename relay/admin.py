@@ -1,5 +1,7 @@
 # relay/admin.py - management: tokens, jobs, audit, admin UI (11th round)
 import asyncio
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -377,6 +379,124 @@ async def admin_jobs(request: Request, credentials: HTTPBasicCredentials | None 
         open_jobs = sorted(open_by[g["id"]], key=lambda v: v["ts"])  # oldest first
         out.append({"id": g["id"], "name": g["name"], "offen": open_jobs, "erledigt": done})
     return {"submitters": out}
+
+
+def _file_view(f):
+    return {"id": f["id"], "size": f.get("size"), "ts": f["ts"], "submitter": f.get("submitter"),
+            "delivered": f.get("delivered", 0), "path": f.get("path")}
+
+
+@router.get("/admin/api/files")
+async def admin_files(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # Dateien je Submitter; uebertragene (delivered>0) gedeckelt wie Jobs (exec_jobs_shown),
+    # queued (noch nicht FETCHed) vollstaendig, aber ohne Inhalt (Inhalt nur per Dialog)
+    await auth.require_admin(request, credentials)
+    shown = config.exec_jobs_shown()
+    subs = {s["id"]: s["name"] for s in store.submitters}
+    groups = [{"id": s["id"], "name": s["name"]} for s in store.submitters]
+    queued_by: dict = {s["id"]: [] for s in store.submitters}
+    done_by: dict = {s["id"]: [] for s in store.submitters}
+    for f in store.files.values():
+        sid = f.get("submitter_id")
+        if sid is None or sid not in subs:
+            sid = sid or "?"
+            if sid not in queued_by:
+                queued_by[sid] = []
+                done_by[sid] = []
+                groups.append({"id": sid, "name": subs.get(sid, "?") if sid != "?" else "?"})
+        if f.get("delivered"):
+            done_by[sid].append(_file_view(f))
+        else:
+            queued_by[sid].append(_file_view(f))
+    out = []
+    for g in groups:
+        done = sorted(done_by[g["id"]], key=lambda v: v["ts"], reverse=True)[:shown]
+        queued = sorted(queued_by[g["id"]], key=lambda v: v["ts"])
+        out.append({"id": g["id"], "name": g["name"], "queued": queued, "uebertragen": done})
+    return {"submitters": out, "deckel_uebertragen": shown}
+
+
+@router.get("/admin/api/files/{fid}")
+async def admin_file_detail(fid: str, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # voller Inhalt NUR fuer queued Dateien; uebertragene nur mit Pfad (siehe Listing)
+    await auth.require_admin(request, credentials)
+    f = store.files.get(fid)
+    if f is None:
+        raise HTTPException(status_code=404, detail="Datei nicht gefunden")
+    if f.get("delivered"):
+        raise HTTPException(status_code=409, detail="bereits uebertragen - nur Pfad: %s" % (f.get("path") or "?"))
+    raw = store.decode_file(f)
+    txt = raw.decode("utf-8", "replace")
+    truncated = False
+    if len(txt) > DETAIL_OUTMAX:
+        txt = txt[:DETAIL_OUTMAX] + "\n[agent-sandbox-relay: Inhalt gekuerzt, voll %d Bytes]" % len(raw)
+        truncated = True
+    return {"id": f["id"], "size": f.get("size"), "ts": f["ts"], "submitter": f.get("submitter"),
+            "content": txt, "content_gekuerzt": truncated, "binary": False}
+
+
+class AdminJobCreate(BaseModel):
+    cmd: str = Field(max_length=config.CMD_ZEICHEN_HARD)
+    submitter_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/admin/api/jobs")
+async def admin_job_create(body: AdminJobCreate, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # manueller Job mit gewaehltem Submitter (Admin-Seite)
+    await auth.require_admin(request, credentials)
+    if len(body.cmd) > config.cmd_zeichen():
+        raise HTTPException(status_code=422, detail="cmd zu lang: %d Zeichen, Limit %d" % (len(body.cmd), config.cmd_zeichen()))
+    sub = next((s for s in store.submitters if s["id"] == body.submitter_id), None)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Submitter nicht gefunden")
+    w = next((w for w in store.workers if w["id"] == sub["worker_id"]), None)
+    if w is None:
+        raise HTTPException(status_code=409, detail="zugeordneter Worker existiert nicht mehr")
+    jid = uuid.uuid4().hex[:12]
+    store.jobs[jid] = {"id": jid, "cmd": body.cmd, "status": "queued", "output": None, "rc": None,
+                       "ts": time.time(), "worker_id": w["id"], "worker": w["name"],
+                       "submitter_id": sub["id"], "submitter": sub["name"]}
+    store.evs.setdefault(w["id"], asyncio.Event()).set()
+    store.audit("submit_admin", jid=jid, submitter=sub["name"], worker=w["name"], cmd_zeichen=len(body.cmd))
+    return {"id": jid}
+
+
+class AdminFileCreate(BaseModel):
+    submitter_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=128)
+    content_b64: str = Field(max_length=12 * 1024 * 1024)  # ~9 MB raw nach Decode, Deckel prueft unten
+
+
+@router.post("/admin/api/files")
+async def admin_file_create(body: AdminFileCreate, request: Request, credentials: HTTPBasicCredentials | None = Depends(security)):
+    # manuelle Datei mit gewaehltem Submitter (Admin-Seite)
+    await auth.require_admin(request, credentials)
+    sub = next((s for s in store.submitters if s["id"] == body.submitter_id), None)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Submitter nicht gefunden")
+    try:
+        raw = base64.b64decode(body.content_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=422, detail="content_b64 ungueltig")
+    if not raw:
+        raise HTTPException(status_code=422, detail="leer")
+    if len(raw) > config.datei_bytes_roh():
+        raise HTTPException(status_code=413)
+    enc = base64.b64encode(gzip.compress(raw)).decode("ascii")
+    store._evict_for(len(enc))
+    if store.data_bytes + len(enc) > config.budget():
+        raise HTTPException(status_code=413, detail="Speicherbudget erreicht")
+    store.data_bytes += len(enc)
+    fid = "f" + uuid.uuid4().hex[:12]
+    store.files[fid] = {"id": fid, "enc": enc, "size": len(raw), "size_enc": len(enc), "ts": time.time(),
+                        "submitter_id": sub["id"], "submitter": sub["name"], "delivered": 0, "path": None,
+                        "name": body.name or None}
+    if len(store.files) > config.datei_store_eintraege():
+        _, old = store.files.popitem(last=False)
+        store.data_bytes -= len(old["enc"])
+        store.audit("evict", ursache="datei_store_voll", entfernt=[{"kind": "file", "id": old["id"]}])
+    store.audit("file_up_admin", fid=fid, size=len(raw), submitter=sub["name"], name=body.name or None)
+    return {"id": fid, "size": len(raw), "size_enc": len(enc)}
 
 
 @router.post("/admin/api/jobs/{jid}/pause")

@@ -40,6 +40,12 @@ SESSION_COOKIE = "vmadmin_session"
 SESSION_TTL = 12 * 3600
 SESSIONS = {}  # token -> expiry (epoch); guarded by SESSIONS_LOCK
 SESSIONS_LOCK = threading.Lock()
+HISTORY_FILE = os.path.join(CONF_DIR, "history.jsonl")
+HISTORY_SHOWN = 200
+MAX_BODY = 1024 * 1024  # 1 MiB Request-Body-Deckel (sonst 413)
+UPDATE_REPO = "Ramb0N05/agent-sandbox-relay"
+UPDATE_FILES = ["files/agent-sandbox-agent", "files/vmadmin",
+                "files/agent-sandbox-agent.service", "files/vm-admin.service"]
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -100,6 +106,55 @@ def write_atomic(path, content, mode=0o600):
         except OSError:
             pass
         raise
+
+
+def _http_get(url):
+    r = run(["curl", "-fsSL", "--max-time", "30", url])
+    return r.stdout if r.returncode == 0 else None
+
+
+def run_vm_update(domain=None):
+    # Update laeuft vollstaendig in der VM: Dateien vom oeffentlichen Repo holen
+    # (Branch-HEAD -> Commit-SHA, raw@<sha> ist immutable; Branch-Refs sind am CDN
+    # gecacht), Agent-Platzhalter bei domain ersetzen, sudo install, daemon-reload,
+    # Agent-Restart; vm-admin-Restart wird DETACHED (systemd-run --on-active) geplant,
+    # damit die HTTP-Antwort nicht abbricht (sonst curl (52) Empty reply).
+    sha = _http_get("https://api.github.com/repos/%s/commits/worker" % UPDATE_REPO)
+    m = re.search(r'"sha":\s*"([0-9a-f]{40})"', sha or "")
+    base = "https://raw.githubusercontent.com/%s/%s" % (UPDATE_REPO, m.group(1) if m else "worker")
+    os.makedirs("/tmp/vm-update", exist_ok=True)
+    for f in UPDATE_FILES:
+        data = _http_get("%s/%s" % (base, f))
+        if data is None:
+            return False, "Download fehlgeschlagen: %s (base %s)" % (f, base)
+        name = f.split("/")[-1]
+        src = os.path.join("/tmp/vm-update", name)
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.chmod(src, 0o600)
+    if domain:
+        src = "/tmp/vm-update/agent-sandbox-agent"
+        with open(src, encoding="utf-8") as fh:
+            agent = fh.read()
+        if "<agent-sandbox-relay-domain>" in agent:
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write(agent.replace("<agent-sandbox-relay-domain>", domain))
+    installs = [
+        ("/tmp/vm-update/agent-sandbox-agent", "/usr/local/bin/agent-sandbox-agent", "worker", "0700"),
+        ("/tmp/vm-update/vmadmin", "/usr/local/bin/vmadmin", "worker", "0700"),
+        ("/tmp/vm-update/agent-sandbox-agent.service", "/etc/systemd/system/agent-sandbox-agent.service", "root", "0644"),
+        ("/tmp/vm-update/vm-admin.service", "/etc/systemd/system/vm-admin.service", "root", "0644"),
+    ]
+    for src, target, owner, mode in installs:
+        r = run(["install", "-o", owner, "-g", owner, "-m", mode, src, target], sudo=True)
+        if r.returncode != 0:
+            return False, "install %s fehlgeschlagen: %s" % (target, r.stderr.strip())
+    run(["systemctl", "daemon-reload"], sudo=True)
+    run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
+    # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
+    # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
+    run(["systemd-run", "--on-active=2s", "systemctl", "restart", "vm-admin.service"], sudo=True)
+    return True, "ok (base %s)" % base
 
 
 def run(cmd_argv, sudo=False):
@@ -346,6 +401,7 @@ label.field input{width:100%}
     <button data-page="status">Status</button>
     <button data-page="einstellungen">Einstellungen</button>
     <button data-page="dienste">Dienste</button>
+    <button data-page="verlauf">Verlauf</button>
     <button data-page="terminal">Terminal</button>
     <button data-page="logout">Logout</button>
   </nav>
@@ -418,6 +474,12 @@ label.field input{width:100%}
   </div>
 </section>
 
+<section class="page" id="page-verlauf">
+  <h2>Verlauf <span class="muted">(zuletzt ausgefuehrte Jobs und Dateiuebertragungen, neueste zuerst)</span></h2>
+  <div class="row"><button id="btn-hist-refresh">Aktualisieren</button></div>
+  <table id="htab" class="rwd"><thead><tr><th>Zeit (lokal)</th><th>Typ</th><th>Submitter</th><th>Befehl/Pfad</th><th>rc</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
 <section class="page" id="page-terminal">
   <h2>Terminal <span class="muted">(ttyd, Port 7681 - nur Host-Zugriff via libvirt-NAT ohne DNAT)</span></h2>
   <div class="card">
@@ -443,6 +505,15 @@ label.field input{width:100%}
 </section>
 
 </main>
+
+<dialog id="dlg-hist">
+  <h3 id="dlg-hist-title">Eintrag</h3>
+  <p class="muted" id="dlg-hist-meta"></p>
+  <pre id="dlg-hist-body" class="mono"></pre>
+  <div class="dlgrow">
+    <button class="primary" id="dlg-hist-close">Schliessen</button>
+  </div>
+</dialog>
 
 <dialog id="dlg-confirm">
   <h3 id="dlg-confirm-title">Sicher?</h3>
@@ -503,7 +574,7 @@ function showConfirm(title, text){
     dlgConfirm.showModal();
   });
 }
-var PAGES = ["login", "status", "einstellungen", "dienste", "terminal"];
+var PAGES = ["login", "status", "einstellungen", "dienste", "verlauf", "terminal"];
 function showPage(name){
   if (name === "logout"){ logout(); return; }
   if (!PW && name !== "login"){ showLogin(""); return; }  // ohne Login nur die Login-Seite
@@ -518,6 +589,7 @@ function showPage(name){
   if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
   if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, 5000); } }
   if (name === "dienste"){ refreshJournal(); }
+  if (name === "verlauf"){ refreshHistory(); }
 }
 function pageFromHash(){
   var h = location.hash.replace("#", "");
@@ -618,6 +690,32 @@ async function refreshJournal(){
   try { d = await api("/admin/api/journal"); } catch (e){ return; }
   document.getElementById("journal").textContent = d.log || "(leer)";
 }
+async function refreshHistory(){
+  var d;
+  try { d = await api("/admin/api/history"); } catch (e){ return; }
+  var tb = document.querySelector("#htab tbody");
+  tb.innerHTML = "";
+  (d.entries || []).slice().reverse().forEach(function(en){
+    var tr = document.createElement("tr");
+    var isFile = en.type === "file";
+    var label = isFile ? (en.dir === "in" ? "FETCH " : "SEND ") + (en.path || "") : (en.cmd || "");
+    if (label.length > 80){ label = label.slice(0, 80) + "..."; }
+    tr.innerHTML = "<td>" + fmtTs(en.ts) + "</td><td>" + (isFile ? "Datei " + (en.dir === "in" ? "ein" : "aus") : "Job") + "</td><td>" + esc(en.submitter || "?") + "</td><td class='mono'>" + esc(label) + "</td><td>" + (en.rc === null || en.rc === undefined ? "-" : en.rc) + "</td>";
+    var td = document.createElement("td");
+    var b = document.createElement("button"); b.textContent = "Voll";
+    b.addEventListener("click", function(){ showHist(en); });
+    td.appendChild(b); tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+function showHist(en){
+  document.getElementById("dlg-hist-title").textContent = (en.type === "file" ? "Dateiuebertragung " : "Job ") + (en.id || "");
+  document.getElementById("dlg-hist-meta").textContent = "Submitter: " + (en.submitter || "?") + " | rc: " + (en.rc === null || en.rc === undefined ? "-" : en.rc) + (en.out_bytes !== undefined ? " | out: " + en.out_bytes + " B" : "") + (en.path ? " | Pfad: " + en.path : "");
+  document.getElementById("dlg-hist-body").textContent = en.cmd || en.path || "";
+  document.getElementById("dlg-hist").showModal();
+}
+document.getElementById("dlg-hist-close").addEventListener("click", function(){ document.getElementById("dlg-hist").close(); });
+document.getElementById("btn-hist-refresh").addEventListener("click", refreshHistory);
 document.getElementById("ttyd-frame").src = "/terminal/";
 document.getElementById("btn-login").addEventListener("click", doLogin);
 document.getElementById("pw").addEventListener("keydown", function(e){ if (e.key === "Enter"){ doLogin(); } });
@@ -770,6 +868,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/admin/api/"):
             if not self._authed():
                 return
+            if self.path == "/admin/api/history":
+                entries = []
+                try:
+                    with open(HISTORY_FILE, encoding="utf-8") as f:
+                        lines = f.readlines()
+                    for ln in lines[-HISTORY_SHOWN:]:
+                        try:
+                            entries.append(json.loads(ln))
+                        except ValueError:
+                            pass
+                except OSError:
+                    pass
+                self._send_json(200, {"entries": entries})
+                return
             if self.path == "/admin/api/state":
                 try:
                     self._send_json(200, read_state())
@@ -792,6 +904,10 @@ class Handler(BaseHTTPRequestHandler):
     def _body_json(self):
         try:
             n = int(self.headers.get("Content-Length", "0"))
+            if n > MAX_BODY:
+                self._send_json(413, {"error": "Body zu gross (>1 MiB)"})
+                self.close_connection = True
+                return None
             return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
         except (ValueError, UnicodeDecodeError):
             return None
@@ -834,6 +950,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         data = self._body_json()
+        if data is None:
+            return  # 413/ungueltig wurde schon beantwortet
         if not isinstance(data, dict):
             self._send_json(400, {"error": "JSON-Body fehlt"})
             return
@@ -867,41 +985,14 @@ class Handler(BaseHTTPRequestHandler):
                 write_atomic(ADMIN_HASH_FILE, sha256_hex(data["new"]) + "\n")
                 self._send_json(200, {"ok": True})
                 return
-            if self.path == "/admin/api/update" and isinstance(data.get("files"), list):
-                # Datei-Update vom Host (vm-install.sh): base64-Dateien landen in
-                # /tmp/vm-update (temporaer), werden per sudo install platziert,
-                # dann daemon-reload + Restarts in angegebener Reihenfolge.
-                allowed_prefixes = ("/usr/local/bin/", "/etc/systemd/system/")
-                os.makedirs("/tmp/vm-update", exist_ok=True)
-                installed = []
-                for f in data["files"]:
-                    if not isinstance(f, dict):
-                        self._send_json(422, {"error": "Dateieintrag kein Objekt"}); return
-                    name = f.get("name", ""); target = f.get("target", "")
-                    owner = f.get("owner", "root"); mode = str(f.get("mode", "0644"))
-                    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) \
-                       or not target.startswith(allowed_prefixes) \
-                       or not os.path.isabs(target) or "/../" in target \
-                       or owner not in ("worker", "root") or not re.fullmatch(r"[0-7]{3,4}", mode):
-                        self._send_json(422, {"error": "ungueltige Datei-Angabe: " + str(name)}); return
-                    try:
-                        content = base64.b64decode(f.get("b64", ""), validate=True)
-                    except Exception:
-                        self._send_json(422, {"error": "b64 ungueltig: " + name}); return
-                    src = os.path.join("/tmp/vm-update", name)
-                    with open(src, "wb") as fh:
-                        fh.write(content)
-                    os.chmod(src, 0o600)
-                    r = run(["install", "-o", owner, "-g", owner, "-m", mode, src, target], sudo=True)
-                    if r.returncode != 0:
-                        self._send_json(500, {"error": "install fehlgeschlagen: " + name, "detail": r.stderr.strip()}); return
-                    installed.append(target)
-                run(["systemctl", "daemon-reload"], sudo=True)
-                for unit in data.get("restart", []):
-                    if not re.fullmatch(r"[A-Za-z0-9_.-]+(\.service)?", str(unit)):
-                        self._send_json(422, {"error": "ungueltige Unit: " + str(unit)}); return
-                    run(["systemctl", "restart", str(unit)], sudo=True)
-                self._send_json(200, {"ok": True, "installed": installed})
+            if self.path == "/admin/api/update":
+                # Update-Routine komplett in der VM (run_vm_update); Body nur
+                # optional {"domain": "..."} - klein, kein Datei-Payload mehr.
+                domain = data.get("domain") if isinstance(data, dict) else None
+                if domain is not None and not validate_endpoint(domain):
+                    self._send_json(422, {"error": "domain ungueltig (https-URL)"}); return
+                ok, detail = run_vm_update(domain or None)
+                self._send_json(200 if ok else 500, {"ok": ok, "detail": detail})
                 return
             if self.path == "/admin/api/service" and "unit" in data:
                 unit = data["unit"]

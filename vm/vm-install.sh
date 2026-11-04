@@ -124,9 +124,31 @@ init_log() {
   fi
 }
 
-die() { log_line "FEHLER: $1"; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+bar_total=0 bar_done=0
+bar() {
+  # overall progress bar: bar <done> <total> <label>  (einzeilig mit \r ueberschreiben)
+  local done="$1" total="$2" label="$3" pct filled i
+  bar_done="$done"; bar_total="$total"
+  if [ "$total" -le 0 ]; then return 0; fi
+  pct=$((done * 100 / total))
+  filled=$((done * 20 / total))
+  printf '\r%s[%s%s] %3d%%  %s%s' "$C_PHASE" "$(printf '#%.0s' $(seq 1 $filled))" "$(printf ' %.0s' $(seq 1 $((20 - filled))))" "$pct" "$label" "$C_OFF"
+  if [ "$done" -ge "$total" ]; then printf '\n'; fi
+  log_line "PROGRESS: $done/$total ($pct%%) $label"
+}
+spin_tick() {
+  # interaktiver Warte-Indicator im Terminal: spin_tick <label>
+  local label="$1"
+  spin_i=$(( (spin_i + 1) % 4 ))
+  local c="\|/-"
+  printf '\r%s%c%s %s' "$C_WARN" "${c:$spin_i:1}" "$C_OFF" "$label"
+}
+spin_clear() { printf '\r%80s\r' ""; }
+
+die() { log_line "FEHLER: $1"; spin_clear; printf '%sFehler: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 info() { printf '%s%s%s\n' "$C_OK" "$1" "$C_OFF"; log_line "INFO: $1"; }
 warn() { printf '%sWARNUNG: %s%s\n' "$C_WARN" "$1" "$C_OFF" >&2; log_line "WARN: $1"; }
+spin_i=0
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "benötigtes Werkzeug fehlt: $1 (pacman -S $1 oder Paket nachtragen)"; }
 
@@ -298,14 +320,14 @@ disk_exists() {
   [ -e "$DISK" ] || virsh_cmd vol-info "$DISK" >/dev/null 2>&1
 }
 
-fetch_repo_files() {
-  # all downloads stay in the temp dir (mktemp -d, removed by the EXIT trap);
-  # only the VM images persist on the host
-  need_cmd curl
+resolve_raw_base() {
   # resolve the branch HEAD to a commit SHA first: raw.githubusercontent.com caches
   # branch refs at the edge, so right after a push the branch URL can still serve the
   # OLD content (observed 31st round); commit-SHA raw URLs are immutable. GitHub REST
   # commits API (docs.github.com/en/rest/commits) for a public repo needs no auth.
+  need_cmd curl
+  WORKDIR="$(mktemp -d)"
+  trap 'rm -rf "$WORKDIR"' EXIT
   local repo_slug ref head_sha
   repo_slug="${RAW_BASE#https://raw.githubusercontent.com/}"
   repo_slug="${repo_slug%/*}"
@@ -314,23 +336,18 @@ fetch_repo_files() {
     head_sha="$(curl -fsSL "https://api.github.com/repos/$repo_slug/commits/$ref" 2>/dev/null | grep -oE '"sha": *"[0-9a-f]{40}"' | head -1 | grep -oE '[0-9a-f]{40}')" || true
     if [ -n "$head_sha" ]; then
       RAW_BASE="https://raw.githubusercontent.com/$repo_slug/$head_sha"
-      info "Repo-HEAD $ref -> Commit $head_sha (immutable raw-URL, kein CDN-Cache)."
+      log_line "INFO: Repo-HEAD $ref -> Commit $head_sha (immutable raw-URL, kein CDN-Cache)."
     fi
   fi
-  WORKDIR="$(mktemp -d)"
-  trap 'rm -rf "$WORKDIR"' EXIT
-  # current worker-branch HEAD via raw.githubusercontent (repo is public)
-  local f
-  for f in cloud-init/sandbox-worker-user-data.yaml \
-           files/agent-sandbox-agent \
-           files/agent-sandbox-agent.service \
-           files/vmadmin \
-           files/vm-admin.service; do
-    local target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
-    curl -fsSL "$RAW_BASE/$f" -o "$target" || die "Download fehlgeschlagen: $RAW_BASE/$f"
-    [ -s "$target" ] || die "leere Datei vom Repo: $f"
-  done
-  info "Aktuelle worker-Dateien geholt (nur temporär in $WORKDIR): user-data, Agent, vmadmin, 3 Units."
+}
+
+fetch_one() {
+  # laedt genau eine Repo-Datei in den Temp-dir (34th round: nur bei Bedarf, nicht pauschal)
+  # $1 = Pfad im Repo; Dateiname = Pfad mit / -> _
+  local f="$1" target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
+  curl -fsSL "$RAW_BASE/$f" -o "$target" || die "Download fehlgeschlagen: $RAW_BASE/$f"
+  [ -s "$target" ] || die "leere Datei vom Repo: $f"
+  log_line "INFO: geholt: $f -> $target"
 }
 
 render_user_data() {
@@ -339,6 +356,7 @@ render_user_data() {
   # 21st round: --domain optional - without it the endpoint placeholder stays in the
   # user-data and the relay endpoint is set via vmadmin after the boot
   [ -n "$ADMIN_PW" ] || ADMIN_PW="$(gen_password)"
+  fetch_one "cloud-init/sandbox-worker-user-data.yaml"
   local ud
   ud="$(cat "$WORKDIR/cloud-init_sandbox-worker-user-data.yaml")"
   if [ -n "$DOMAIN" ]; then
@@ -422,7 +440,7 @@ wait_vm_ready_api() {
   done
   [ -n "$boot_first" ] || return 1
   info "vmadmin-API erreichbar (boot_id $boot_first, uptime ${up_first}s). Warte auf cloud-init done + power_state-Neustart + aktive Units ..."
-  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 240)) last_status="" status_line="" 
+  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 120)) last_status="" status_line="" 
   local bid="" up="" ci="" u_agent="" u_vm="" u_ttyd="" sysr=""
   while [ $SECONDS -lt $deadline ]; do
     vm_running || return 1
@@ -451,14 +469,16 @@ wait_vm_ready_api() {
     fi
     polls=$((polls + 1))
     status_line="boot_id=${bid:-?} uptime=${up:-?}s cloud_init=${ci:-?} agent=${u_agent:-?} vm_admin=${u_vm:-?} ttyd=${u_ttyd:-?} system=${sysr:-?} rebooted=$rebooted ready=$ready"
+    # Terminal nur Indikator; Details ins Log (34th round)
+    spin_tick "Warte auf VM-Status (Poll $polls, rebooted=$rebooted ready=$ready)"
     if [ "$status_line" != "$last_status" ]; then
-      info "Warte (Poll $polls): $status_line"
+      spin_clear
+      log_line "INFO: Poll $polls: $status_line"
       last_status="$status_line"
-    elif [ $((polls % 12)) -eq 0 ]; then
-      info "Warte (Poll $polls, seit letzter Aenderung): $status_line"
     fi
     sleep 5
   done
+  spin_clear
   return 1
 }
 
@@ -542,9 +562,12 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --memballoon none \
     --controller usb,model=none \
     --noautoconsole
+  bar 4 6 "Warte auf cloud-init + Reboot + Bereitschaft (vmadmin-API)"
   info "VM angelegt. Warte auf Einsatzbereitschaft über die vmadmin-API (keine serielle Konsole) ..."
   wait_vm_ready_api || die "vmadmin-API meldet nicht einsatzbereit (Timeout). Debug: vmadmin-UI http://<ip>/admin (Login admin), ttyd-Terminal, virsh console $VM_NAME (manuell)."
+  spin_clear
   detach_seed
+  bar 5 6 "Seed detached, Initialwerte" 
   local ip="${VM_IP:-}"
   if [ -z "$ip" ]; then
     info "Warte auf DHCP-Lease (Netzwerk default) ..."
@@ -616,6 +639,7 @@ render_agent() {
   # agent file: replace the placeholder endpoint only if it is still in there
   # 21st round: --domain optional - without it the placeholder stays; the agent
   # reads the endpoint file first (written by vmadmin POST /admin/api/endpoint)
+  fetch_one "files/agent-sandbox-agent"
   local agent="$WORKDIR/files_agent-sandbox-agent"
   if grep -q '<agent-sandbox-relay-domain>' "$agent"; then
     if [ -n "$DOMAIN" ]; then
@@ -637,6 +661,7 @@ render_agent() {
 }
 
 
+
 update_vm() {
   local state
   state="$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)"
@@ -644,8 +669,14 @@ update_vm() {
     die "VM ist nicht gestartet (Zustand: ${state:-unbekannt}). Erst starten:
   virsh --connect $LIBVIRT_URI start $VM_NAME"
   fi
+  # Update laeuft ueber die vmadmin-API und braucht das vmadmin-Login (admin)
+  if [ -z "$ADMIN_PW" ]; then
+    die "Update-Pfad braucht --admin-password <vmadmin-Login-Passwort>.
+Das vmadmin-Passwort steht in der Initialwerte-Ausgabe der Anlage oder laesst sich in der VM aendern (vmadmin-UI)."
+  fi
   need_cmd curl
   need_cmd jq
+  bar 1 4 "Update: Status lesen"
   local ip="" tries=0
   while [ $tries -lt 24 ]; do
     ip="$(vm_ip)"
@@ -656,55 +687,49 @@ update_vm() {
   [ -n "$ip" ] || die "Keine DHCP-Lease innerhalb von 120 s (virsh net-dhcp-leases default)."
   VM_IP="$ip"
   local url="http://$ip/admin/api/state" auth="admin:$ADMIN_PW"
-  info "VM-IP $ip - lese Status ueber vmadmin-API ($url) ..."
+  log_line "INFO: VM-IP $ip - lese Status ueber vmadmin-API ($url) ..."
   local st
   st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" \
-    || die "vmadmin-API nicht erreichbar (http://$ip/admin/api/state, Login admin). vm-admin aktiv? VM laeuft?"
-  # ohne --domain den laufenden Endpoint aus der VM uebernehmen (state.endpoint)
+    || die "vmadmin-API nicht erreichbar (http://$ip/admin/api/state, Login admin mit --admin-password). vm-admin aktiv? VM laeuft? Falsches Passwort?"
   if [ -z "$DOMAIN" ]; then
     local ep
     ep="$(printf '%s' "$st" | jq -r '.endpoint // empty')" || true
     case "$ep" in
       ""|*"<agent-sandbox-relay-domain>"*) ;;
-      *) DOMAIN="$ep"; info "Laufender Relay-Endpoint aus der VM uebernommen: $DOMAIN" ;;
+      *) DOMAIN="$ep"; log_line "INFO: laufender Relay-Endpoint aus der VM uebernommen: $DOMAIN" ;;
     esac
   fi
-  render_agent
-  info "Update ueber vmadmin-API (POST /admin/api/update; Dateien base64 nach /tmp/vm-update in der VM, sudo install, daemon-reload, Restarts; keine serielle Konsole, keine Relay-API) ..."
-  local files_json
-  files_json="$(jq -n \
-    --arg b_agent "$(base64 -w0 "$WORKDIR/agent.rendered")" \
-    --arg b_vmadmin "$(base64 -w0 "$WORKDIR/files_vmadmin")" \
-    --arg b_asvc "$(base64 -w0 "$WORKDIR/files_agent-sandbox-agent.service")" \
-    --arg b_vmadm "$(base64 -w0 "$WORKDIR/files_vm-admin.service")" \
-    '{files: [
-      {name: "agent", b64: $b_agent, target: "/usr/local/bin/agent-sandbox-agent", owner: "worker", mode: "0700"},
-      {name: "vmadmin", b64: $b_vmadmin, target: "/usr/local/bin/vmadmin", owner: "worker", mode: "0700"},
-      {name: "agent.service", b64: $b_asvc, target: "/etc/systemd/system/agent-sandbox-agent.service", owner: "root", mode: "0644"},
-      {name: "vm-admin.service", b64: $b_vmadm, target: "/etc/systemd/system/vm-admin.service", owner: "root", mode: "0644"}
-    ], restart: ["vm-admin.service", "agent-sandbox-agent.service"]}')"
-  local resp
-  resp="$(curl -fsS --max-time 60 -u "$auth" -H "Content-Type: application/json" \
-    -d "$files_json" "http://$ip/admin/api/update")" \
-    || die "POST /admin/api/update fehlgeschlagen (http://$ip/admin/api/update)"
-  printf '%s' "$resp" | jq -e '.ok == true' >/dev/null || die "Update von vmadmin abgelehnt: $resp"
+  bar 2 4 "Update anstossen (laeuft in der VM)"
+  # Update-Routine laeuft vollstaendig in der VM (vmadmin run_vm_update: Holt die Dateien
+  # selbst aus dem Repo, installiert, startet neu); nur ein kleines Trigger-JSON.
+  local body="{}"
   if [ -n "$DOMAIN" ]; then
-    # Endpoint setzen, falls --domain angegeben (vmadmin startet den Agent danach neu);
-    # behebt den Platzhalter-Fehler ([Errno -2] Name or service not known im Agent-Journal)
-    curl -fsS --max-time 15 -u "$auth" -H "Content-Type: application/json" \
-      -d "{"endpoint": "$DOMAIN"}" "http://$ip/admin/api/endpoint" >/dev/null \
-      || warn "Endpoint $DOMAIN konnte nicht per API gesetzt werden (POST /admin/api/endpoint)."
+    body="$(jq -n --arg d "$DOMAIN" '{domain: $d}')"
   fi
-  sleep 3
-  st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
-  local agent_state
-  agent_state="$(printf '%s' "$st" | jq -r '.agent // "?"')" || true
+  local resp
+  resp="$(curl -fsS --max-time 180 -u "$auth" -H "Content-Type: application/json" \
+    -d "$body" "http://$ip/admin/api/update")" \
+    || die "POST /admin/api/update fehlgeschlagen (http://$ip/admin/api/update, leere Antwort = vmadmin neu gestartet?)"
+  printf '%s' "$resp" | jq -e '.ok == true' >/dev/null || die "Update von vmadmin abgelehnt: $resp"
+  bar 3 4 "Warte auf Agent-Neustart"
+  sleep 5
+  local tries2=0 agent_state=""
+  while [ $tries2 -lt 12 ]; do
+    st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
+    agent_state="$(printf '%s' "$st" | jq -r '.agent // "?"')" || true
+    if [ "$agent_state" = "active" ]; then break; fi
+    spin_tick "Agent-Status: $agent_state"
+    sleep 5
+    tries2=$((tries2 + 1))
+  done
+  spin_clear
+  bar 4 4 "Update fertig"
   if [ "$agent_state" = "active" ]; then
-    info "Update abgeschlossen: agent aktiv. Worker-Token und Admin-Hash wurden nicht angetastet."
+    info "Update abgeschlossen: agent aktiv (vmadmin laeuft ab naechstem Boot neu). Worker-Token und Admin-Hash unveraendert."
   else
-    info "WARNUNG: agent meldet '$agent_state' - Journal in der vmadmin-UI (http://$ip/admin, Seite Dienste)."
+    warn "agent meldet '$agent_state' - Journal in der vmadmin-UI (http://$ip/admin, Seite Dienste/Verlauf)."
   fi
-  info "Dateien liegen nur in /tmp/vm-update (VM, temporaer) und im mktemp-Verzeichnis des Skripts (per trap entfernt); dauerhaft bleiben nur die Images."
+  log_line "INFO: Update fertig, agent=$agent_state. Dateien lagen nur in /tmp/vm-update (VM, temporaer)."
 }
 confirm_recreate() {
   info "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -742,12 +767,15 @@ main() {
   parse_args "$@"
   init_log
   log_line "START: $SELF_PATH ${ORIG_ARGS[*]} (dry=$DRY_RUN recreate=$RECREATE)"
-  fetch_repo_files
+  resolve_raw_base
+  bar 1 6 "Repo-HEAD aufgeloest, Dateien bei Bedarf"
   if [ "$DRY_RUN" -eq 0 ]; then
     need_cmd virsh
     check_libvirt_access
     resolve_paths
+    bar 2 6 "Pfade aufgeloest"
     check_self_update
+    bar 3 6 "Selbst-Update geprueft"
   else
     resolve_paths
     info "Dry-Run: Self-Update-Check würde sha256(\$0) mit $RAW_BASE/vm/vm-install.sh vergleichen (kein Schreiben)."
@@ -781,6 +809,7 @@ main() {
       # bestehende Konsolen-Sessions - wir trennen die Session vor dem Destroy, damit das
       # VMM-Fenster nicht einfriert. (Kein Datenzugriff ueber die Konsole, nur Session-Kick.)
       virsh_cmd console "$VM_NAME" --force </dev/null >/dev/null 2>&1 || true
+      warn "Falls die VM in virt-manager geoeffnet ist: bitte das VM-Fenster vorher schliessen - beim Destroy/Undefine mit offenem Fenster kann das virt-manager-GUI einfrieren (bekannte Upstream-Bugs)."
       info "Konsolen-Session der VM getrennt (virsh console --force), falls eine bestand."
       if [ -n "$rstate" ] && [ "$rstate" != "shut off" ]; then
         info "VM ist '$rstate' - virsh destroy (sofortiges Beenden, virsh(1) destroy)."

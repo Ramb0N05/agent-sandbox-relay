@@ -51,6 +51,8 @@ def _load_endpoint():
 
 TOKEN = _load_token()
 ENDPOINT = _load_endpoint()
+HISTORY_FILE = os.path.join(os.path.dirname(ENDPOINT_FILE), "history.jsonl")
+HISTORY_MAX = 500  # Zeilen; aelteste werden abgeschnitten
 POLL_TIMEOUT = 310  # client cap just above the server-side long poll (300 s)
 CMAX = 900  # execution cap per job (seconds)
 OUTMAX = 8 * 1024 * 1024  # output cap 8 MiB (section 10.7)
@@ -172,6 +174,22 @@ def execute(cmd, relay):
     return run_cmd(cmd)
 
 
+def log_history(entry):
+    # Verlauf der ausgefuehrten Jobs + Dateiuebertragungen (vmadmin zeigt ihn an)
+    try:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+        # Deckel: letzte HISTORY_MAX Zeilen behalten
+        with open(HISTORY_FILE, encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > HISTORY_MAX:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                f.writelines(lines[-HISTORY_MAX:])
+    except OSError:
+        pass
+
+
 def poll_once(relay):
     # one cycle: long poll, execution, result; None when idle (no sleep needed)
     j = relay.next_job()
@@ -179,6 +197,18 @@ def poll_once(relay):
         return None
     rc, out = execute(j["cmd"], relay)
     relay.post_result(j["id"], out, rc)
+    cmd = j.get("cmd") or ""
+    parts = cmd.split()
+    if parts and parts[0] == "FETCH" and len(parts) >= 3:
+        entry = {"ts": time.time(), "type": "file", "dir": "in", "id": j["id"],
+                 "submitter": j.get("submitter"), "path": parts[2], "rc": rc}
+    elif parts and parts[0] == "SEND" and len(parts) >= 2:
+        entry = {"ts": time.time(), "type": "file", "dir": "out", "id": j["id"],
+                 "submitter": j.get("submitter"), "path": parts[1], "rc": rc}
+    else:
+        entry = {"ts": time.time(), "type": "job", "id": j["id"],
+                 "submitter": j.get("submitter"), "cmd": cmd, "rc": rc, "out_bytes": len(out)}
+    log_history(entry)
     return j["id"]
 
 

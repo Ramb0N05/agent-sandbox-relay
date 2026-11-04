@@ -482,7 +482,9 @@ write_files:
 
 
       def run(cmd_argv, sudo=False):
-          argv = (["sudo"] if sudo else []) + cmd_argv
+          # sudo -n: nie nach einem Passwort fragen - bei Bedarf sofort Fehler statt
+          # Prompt/Timeout im systemd-Dienst (sudo(8): -n non-interactive, sofortiger Exit)
+          argv = (["sudo", "-n"] if sudo else []) + cmd_argv
           return subprocess.run(argv, capture_output=True, text=True, timeout=30)
 
 
@@ -1360,7 +1362,11 @@ write_files:
                       if not validate_token(data["token"]):
                           self._send_json(422, {"error": "Token ungültig (8-128 ASCII-Zeichen, ohne Whitespace)"})
                           return
-                      write_atomic(TOKEN_FILE, data["token"] + "\n")
+                      try:
+                          write_atomic(TOKEN_FILE, data["token"] + "\n")
+                      except Exception as e:
+                          self._send_json(500, {"error": "Token konnte nicht geschrieben werden (%s): %s" % (TOKEN_FILE, e)})
+                          return
                       rc, detail = restart_agent()
                       # Schreiben hat geklappt -> 200; Restart-Fehler als warning mit Diagnose (nicht als 500)
                       resp = {"ok": True}
@@ -1372,7 +1378,11 @@ write_files:
                       if not validate_endpoint(data["endpoint"]):
                           self._send_json(422, {"error": "Endpoint ungültig (https://-URL, 8-200 ASCII-Zeichen, ohne Whitespace)"})
                           return
-                      write_atomic(ENDPOINT_FILE, data["endpoint"] + "\n")
+                      try:
+                          write_atomic(ENDPOINT_FILE, data["endpoint"] + "\n")
+                      except Exception as e:
+                          self._send_json(500, {"error": "Endpoint konnte nicht geschrieben werden (%s): %s" % (ENDPOINT_FILE, e)})
+                          return
                       rc, detail = restart_agent()
                       resp = {"ok": True}
                       if rc != 0:

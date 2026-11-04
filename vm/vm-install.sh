@@ -344,7 +344,8 @@ resolve_raw_base() {
 fetch_one() {
   # laedt genau eine Repo-Datei in den Temp-dir (34th round: nur bei Bedarf, nicht pauschal)
   # $1 = Pfad im Repo; Dateiname = Pfad mit / -> _
-  local f="$1" target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
+  local f="$1"
+  local target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
   curl -fsSL "$RAW_BASE/$f" -o "$target" || die "Download fehlgeschlagen: $RAW_BASE/$f"
   [ -s "$target" ] || die "leere Datei vom Repo: $f"
   log_line "INFO: geholt: $f -> $target"

@@ -467,6 +467,9 @@ write_files:
           run(["systemctl", "restart", AGENT_SERVICE + ".service"], sudo=True)
           # vm-admin-Restart detached planen - ein synchroner Restart killt die laufende
           # HTTP-Verbindung vor der Antwort (curl (52) Empty reply)
+          # Self-Heal (44. Runde): CONF_DIR muss worker gehoeren, sonst write_atomic -> Permission denied
+          run(["chown", "-R", "worker:worker", CONF_DIR], sudo=True)
+          run(["chmod", "700", CONF_DIR], sudo=True)
           # Versionsstand automatisiert setzen: Inhalt der Repo-VERSION-Datei (einzige Wahrheit)
           vsrc = "unbekannt"
           try:
@@ -735,6 +738,9 @@ write_files:
         border:1px solid var(--acc);border-radius:8px;padding:.5rem 1rem;opacity:0;transition:opacity .3s;z-index:9;
         max-width:90vw;max-height:40vh;overflow-y:auto;white-space:pre-wrap;text-align:left}
       .toast.show{opacity:1}
+      .toast.err{border-color:#e5484d;background:rgba(229,72,77,.18)}
+      .toast.warn{border-color:#e2b93b;background:rgba(226,185,59,.14)}
+      #toast-copy{margin-left:.6rem;padding:.1rem .5rem;font-size:.75rem}
       pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem;
         overflow-x:auto;font-size:.82rem;max-height:420px;overflow-y:auto}
       .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
@@ -878,7 +884,7 @@ write_files:
         </div>
       </dialog>
 
-      <div class="toast" id="toast"></div>
+      <div class="toast" id="toast"><span id="toast-msg"></span><button id="toast-copy" type="button" style="display:none">kopieren</button></div>
 
       <script nonce="__NONCE__">
       "use strict";
@@ -901,18 +907,36 @@ write_files:
         var r = await fetch(path, opts);
         if (r.status === 401){ showLogin("Login fehlgeschlagen"); throw new Error("401"); }
         if (r.status === 429){ showLogin("Gesperrt: zu viele Fehlversuche (Retry-After " + r.headers.get("Retry-After") + " s)"); throw new Error("429"); }
-        if (r.status === 503){ toast("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)", 30000); throw new Error("503"); }
-        if (!r.ok){ var t = await r.text(); toast("Fehler " + r.status + ": " + t.slice(0, 1000), 30000); throw new Error(String(r.status)); }
+        if (r.status === 503){ toast("Verwaltung deaktiviert (kein Admin-Passwort gesetzt)", 30000, "err"); throw new Error("503"); }
+        if (!r.ok){ var t = await r.text(); toast("Fehler " + r.status + ": " + t.slice(0, 1000), 30000, "err"); throw new Error(String(r.status)); }
         return r.json();
       }
       function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
-      function toast(msg, ms){
-        // ms optional; Fehler/Warnungen bekommen 30 s (kopierbar), Infos bleiben kurz
+      function toast(msg, ms, kind){
+        // ms optional (Fehler/Warnungen 30 s), kind "err" = rot + Kopier-Button, "warn" = gelb + Kopier-Button
         var t = document.getElementById("toast");
-        t.textContent = msg;
+        document.getElementById("toast-msg").textContent = msg;
         t.classList.add("show");
+        t.classList.toggle("err", kind === "err");
+        t.classList.toggle("warn", kind === "warn");
+        document.getElementById("toast-copy").style.display = kind ? "inline-block" : "none";
         setTimeout(function(){ t.classList.remove("show"); }, ms || 2600);
       }
+      async function copyToast(){
+        // Clipboard API nur in secure context - vmadmin laeuft auf http://<IP> (kein secure context),
+        // deshalb Fallback textarea + execCommand('copy') im Click-Handler (Quellen 212-213)
+        var t = document.getElementById("toast-msg").textContent;
+        try {
+          if (navigator.clipboard && window.isSecureContext){ await navigator.clipboard.writeText(t); toast("kopiert", 1500); return; }
+        } catch (e) {}
+        var ta = document.createElement("textarea");
+        ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { document.execCommand("copy"); toast("kopiert", 1500); }
+        catch (e) { toast("Kopieren nicht moeglich - bitte Text markieren", 4000, "err"); }
+        document.body.removeChild(ta);
+      }
+      document.getElementById("toast-copy").addEventListener("click", copyToast);
       function fmtBytes(n){
         if (n === null || n === undefined){ return "-"; }
         var u = ["B", "KiB", "MiB", "GiB"], i = 0, v = Number(n);
@@ -1021,7 +1045,7 @@ write_files:
         if (!ok){ return; }
         var r = await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
         document.getElementById("ep").value = "";
-        if (r.warning){ toast("WARNUNG: " + r.warning, 30000); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
+        if (r.warning){ toast("WARNUNG: " + r.warning, 30000, "warn"); } else { toast("Endpoint gesetzt, Agent neu gestartet"); }
         refreshStatus();
       }
       async function saveToken(){
@@ -1030,7 +1054,7 @@ write_files:
         if (!ok){ return; }
         var r = await api("/admin/api/token", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({token: tok}) });
         document.getElementById("tok").value = "";
-        if (r.warning){ toast("WARNUNG: " + r.warning, 30000); } else { toast("Token gesetzt, Agent neu gestartet"); }
+        if (r.warning){ toast("WARNUNG: " + r.warning, 30000, "warn"); } else { toast("Token gesetzt, Agent neu gestartet"); }
         refreshStatus();
       }
       async function changePw(){
@@ -1468,6 +1492,8 @@ runcmd:
   - systemctl enable --now agent-sandbox-agent.service
   - systemctl enable --now ttyd-worker.service
   - mkdir -p /home/worker/.config/agent-sandbox  # vmadmin expects the directory (worker-token, admin-hash)
+  - chown worker:worker /home/worker/.config/agent-sandbox  # 44. Runde: dir selbst worker-uebergeben (write_atomic mkstemp), war root-owned -> Permission denied
+  - chmod 700 /home/worker/.config/agent-sandbox
   - printf '%s' '<vm-admin-passwort>' | sha256sum | cut -d' ' -f1 > /home/worker/.config/agent-sandbox/admin-hash
   - chown worker:worker /home/worker/.config/agent-sandbox/admin-hash  # only the hash is in the file (sha256, no plaintext)
   - chmod 600 /home/worker/.config/agent-sandbox/admin-hash

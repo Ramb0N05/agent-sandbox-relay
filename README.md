@@ -39,7 +39,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   die Referenzkopie.
 - files/agent-sandbox-agent.service: systemd-Unit des Pull-Agents
   (Restart=always), Ziel /etc/systemd/system/.
-- files/ttyd-worker.service: systemd-Unit des Web-Terminals (nur vom Host
+- files/ttyd-worker.service: systemd-Unit des Web-Terminals (Port 7681, nur vom Host
   erreichbar, Basic Auth, max. 2 Clients, ZMODEM aktiviert), Ziel
   /etc/systemd/system/.
 - files/vmadmin: Verwaltungs-UI der VM auf Port 80 (fünfzehnte Runde,
@@ -58,8 +58,9 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   (https-URL mit Host, 8-200 ASCII-Zeichen ohne Whitespace, atomar nach
   /home/worker/.config/agent-sandbox/endpoint, danach Neustart des
   Agents; ohne Datei bleibt der Platzhalter aus der cloud-init-Konfiguration
-  aktiv), ttyd-Passwort setzen
-  (1-64 druckbare ASCII ohne Doppelpunkt und Whitespace - ttyd kennt nur
+  aktiv); ttyd laeuft ohne eigenes -c-Credential (31. Runde: kein eigenes
+  ttyd-Passwort mehr - das Terminal ist in die vmadmin-UI eingebettet und
+  der Zugriff ist auf den Host beschraenkt, libvirt-NAT ohne DNAT)
   -c user:password und kein Credential-File; die Unit wird neu geschrieben,
   daemon-reload und Neustart), eigenes Admin-Passwort ändern (sha256-Hash
   in /home/worker/.config/agent-sandbox/admin-hash; der Hash liegt nur als
@@ -122,7 +123,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
   KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt
   die Dateien selbst aus dem öffentlichen Repo nach /tmp/vm-update,
-  gerenderte Dateien (Agent, ttyd-Unit) kommen als base64-Heredoc über
+  gerenderte Dateien kommen als base64-Payload an die vmadmin-API (POST
   die Konsole. Self-Update: sha256-Vergleich mit vm/vm-install.sh im Repo
   (--self-update ersetzt $0, Backup inklusive). Details und Parameter:
   Abschnitt "VM anlegen oder aktualisieren" unten.
@@ -142,8 +143,6 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   einundzwanzigsten Runde optional: ohne Ersetzung bleibt der Platzhalter
   als Fallback-Konstante, das echte Endpoint wird nach dem Boot über die
   vmadmin-UI gesetzt (Datei geht der Konstante vor).
-- <ttyd-passwort> in cloud-init und files/ttyd-worker.service: Basic-Auth-
-  Passwort des Web-Terminals.
 - <vm-admin-passwort> in cloud-init (nur runcmd): Anfangs-Passwort der
   VM-Verwaltung (Login "admin"). In der VM liegt nur der sha256-Hash
   (/home/worker/.config/agent-sandbox/admin-hash, 0600, owner worker);
@@ -184,7 +183,7 @@ heruntergeladenen worker-Dateien liegen nur temporär in mktemp -d und
 werden per trap entfernt; dauerhaft bleiben nur die Images; mit Angabe
 wird eine zusätzliche dauerhafte Kopie unter dem Pfad abgelegt),
 --raw-base (raw.githubusercontent.com, Branch worker), --domain (optional),
---worker-token, --ttyd-password, --admin-password, --self-update,
+--worker-token, --admin-password, --no-self-update,
 --recreate, --yes, --dry-run. --relay/--submitter-token gibt es nicht mehr:
 das Skript spricht die Relay-API an keiner Stelle an.
 
@@ -196,7 +195,7 @@ manage_path), Overlay-Löschung über virsh vol-delete.
 
 Installation (VM existiert nicht): fetch der user-data, des Agenten, von
 vmadmin und der Units vom aktuellen worker-Zweig (nur temporär); Ersetzen
-von <agent-sandbox-relay-domain> (nur mit --domain), <ttyd-passwort> und
+von <agent-sandbox-relay-domain> (nur mit --domain) und
 <vm-admin-passwort> (sonst generiert aus /dev/urandom, random(4)). Danach
 wird die Seed-ISO lokal gebaut (genisoimage -output seed.iso -volid cidata
 -joliet -rock user-data meta-data; NoCloud-Doku: Volume-Label cidata mit
@@ -211,48 +210,42 @@ Live-XML on_reboot=destroy (virtinst/install/installer.py
 _alter_bootconfig), sodass der power_state-Reboot die VM zerstört hat
 (beobachtet in der 26. Runde). Nach dem Warten wird die Seed-vdb per
 virsh detach-disk --live --config entfernt (die temp-ISO enthält die
-gerenderten Passwörter). Die VM bootet serial-getty@ttyS0 mit agetty
---autologin worker (user-data), die Konsole loggt also von selbst als
-worker ein (agetty(8) --autologin). Dann wartet das Skript über die
-Konsole: erst `cloud-init status --wait` (blockiert bis cloud-init fertig;
-Exit 0 ok / 1 Crash / 2 behebbare Fehler - cloud-init CLI-Referenz) bzw.
-"status: done", dann der einmalige power_state-Neustart (Modul läuft once
-per instance nach allen anderen Config-Modulen - cloud-init Modul-
-Referenz; erkennbar am Wechsel von /proc/sys/kernel/random/boot_id, das
-sich genau einmal pro Boot ändert - Kernel-sysctl-Doku), dann nach dem
-Neustart erneut cloud-init done plus `systemctl is-active
-agent-sandbox-agent vm-admin ttyd-worker` und `systemctl is-system-running`
-(running/degraded). Erst wenn die VM so vollständig einsatzbereit ist,
-kommen DHCP-Lease (net-dhcp-leases; MAC-Zeile matchen statt Zeilennummer -
-vsh-table.c) und die Initialwerte (IP, Passwörter, Endpoint, Konsole).
-cloud-init legt /var/lib/cloud/instance/boot-finished als letzte Datei an
-(cloud-init internal files).
+gerenderten Passwörter). Danach wartet das Skript ausschließlich über die vmadmin-API in der VM
+(keine serielle Konsole - 31. Runde; die Konsole ist eine einzige Session und
+eine parallel geöffnete virt-manager-Ansicht stoßert: "Active console
+session exists for this domain", virsh(1)): IP per DHCP-Lease (net-dhcp-leases,
+MAC-Zeile matchen - vsh-table.c), dann Poll von GET /admin/api/state (Basic
+admin) im 10-s-Takt. vmadmin read_state liefert boot_id, cloud_init,
+system_running, uptime_s und die Unit-States. Erkannt wird der einmalige
+power_state-Neustart am Wechsel von /proc/sys/kernel/random/boot_id (Kernel-
+sysctl-Doku: ändert sich genau einmal pro Boot) oder am Uptime-Abfall
+(/proc/uptime, proc(5)); zusätzlich Safety-Net nach 240 s. Fertig, wenn
+cloud-init "status: done" (cloud-init CLI-Referenz, Exit 0/1/2) UND agent,
+vm-admin, ttyd aktiv UND system running/degraded. power_state timeout ist
+auf 60 s gesetzt (cc_power_state_change run_after_pid_gone führt die Aktion
+auch nach timeout aus - sonst erst nach 300 s). Erst dann Seed-vdb detach
+(vorher schon) und Initialwerte (IP, Admin-Passwort, Endpoint, ttyd-URL).
 
-Update (VM existiert, ohne --recreate): ausschließlich über die serielle
-Konsole, keine Relay-API-Zugriffe (kein POST /jobs, kein /files, keine
-Token): `virsh console --force --safe` (--force trennt verwaiste Sitzungen,
---safe erzwingt exclusive access - virsh(1)). Ablauf: Benutzer prüfen
-(id -un muss worker liefern, sonst --recreate-Hinweis); ohne --domain den
-laufenden Endpoint aus der VM lesen (Endpoint-Datei vor ENDPOINT-Konstante
-des installierten Agenten); dann lädt die VM die ungeänderten Dateien
-selbst aus dem öffentlichen Repo nach /tmp/vm-update (curl ist per
-cloud-init installiert, packages in der user-data); gerenderte Dateien
-(Agent mit Endpoint, ttyd-Unit nur mit --ttyd-password wegen ExecStart)
-kommen als base64-Heredoc über die Konsole (Zeilen <= 76 Zeichen mit
-base64(1) -w 76, unter der kanonischen Zeilenlänge des tty); dann sudo
-install (vmadmin und Agent worker:worker 0700, Units root:root 0644 wie
-die cloud-init write_files-Defaults), daemon-reload, vm-admin- und
-ttyd-Neustart, Agent-Restart zuletzt verzögert über einen transienten
-Timer (systemd-run --on-active=3s, systemd-run(1)), Verifikation per
-systemctl is-active. Worker-Token-Datei, Admin-Hash und ttyd-Passwort
-bleiben unberührt.
+Update (VM existiert, ohne --recreate): ausschließlich über die vmadmin-API,
+keine serielle Konsole und keine Relay-API-Zugriffe (kein POST /jobs, kein
+/files, keine Token). Ablauf: Status per GET /admin/api/state lesen (daraus
+ohne --domain den laufenden Endpoint übernehmen); Agent mit Endpoint
+hostseitig rendern; dann POST /admin/api/update mit den Dateien base64
+(agent, vmadmin, 2 Units) - vmadmin legt sie in /tmp/vm-update (temporaer),
+installiert per sudo install (agent/vmadmin worker:worker 0700, Units
+root:root 0644), daemon-reload, restart vm-admin.service und danach
+agent-sandbox-agent.service. Verifikation per state.agent. Worker-Token-
+Datei und Admin-Hash bleiben unberührt; die ttyd-Unit wird nicht mehr
+angefasst (kein ttyd-Passwort mehr - ttyd läuft ohne -c und ist in die
+vmadmin-UI als Terminal-Seite (iframe http://<host>:7681/, CSP frame-src)
+eingebettet, Zugriff nur vom Host via libvirt-NAT ohne DNAT).
 
 Self-Update: vor jedem echten Lauf vergleicht das Skript sha256($0) mit der
 Repo-Kopie unter $RAW_BASE/vm/vm-install.sh (raw.githubusercontent.com liefert
 Rohbytes; GitHub REST Contents API: download_url = raw.githubusercontent.com,
-docs.github.com/en/rest/repos/contents). Bei Abweichung nur Hinweis; mit
---self-update wird $0 durch die Repo-Version ersetzt (Backup $0.bak-<ts>)
-und das Skript startet mit den Original-Argumenten neu.
+docs.github.com/en/rest/repos/contents). Bei Abweichung wird $0
+automatisch durch die Repo-Version ersetzt (Backup $0.bak-<ts>, Re-Start mit
+Original-Argumenten); Abschalten mit --no-self-update.
 
 --recreate: verwirft die Domain (virsh undefine) und löscht das Overlay.
 DAS LÖSCHT ALLE DATEN DER VM (cloud-init läuft pro Overlay nur einmal,

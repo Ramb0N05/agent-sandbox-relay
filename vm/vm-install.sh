@@ -18,15 +18,14 @@
 # XML; _create_guest starts the live domain with that initial XML). The power_state
 # reboot then destroyed the VM (observed in the 26th round). Single-phase --import keeps
 # live == persistent == final XML with our --events values (virt-install(1) --events).
-# Readiness wait (install) polls the vmadmin API in the VM (GET /admin/api/state,
-# Basic auth) - the serial console is a single session and a parallel virt-manager
-# console view breaks console-based polling ("Active console session exists", 30th
-# round) - with the console path as fallback.
-# Update (VM exists): exclusively over the VM serial console (virsh console --force
-# --safe, autologin worker via serial-getty@ttyS0 with agetty --autologin, agetty(8));
-# the VM downloads the current files itself from the public repo into /tmp/vm-update
-# (temporary), rendered files (agent with endpoint, ttyd unit) go through the console as
-# a base64 heredoc. NO relay API access anywhere in this script (no POST /jobs, no /files).
+# Readiness wait (install) AND update run EXCLUSIVELY over the vmadmin API in the VM
+# (GET /admin/api/state, POST /admin/api/update with base64 files; Basic admin auth) -
+# NO serial console access at all in this script (31st round): the serial console is a
+# single session and a parallel virt-manager console view breaks console-based access
+# ("Active console session exists for this domain"). NO relay API access either
+# (no POST /jobs, no /files). The VM reaches the public repo itself only via cloud-init;
+# updates ship files base64-encoded to /tmp/vm-update in the VM (temporary) and install
+# them via the API (sudo install, daemon-reload, restarts).
 # Self-update: the script compares its own sha256 with the repo copy
 # ($RAW_BASE/vm/vm-install.sh; raw.githubusercontent.com serves raw file bytes, GitHub REST
 # contents API download_url) and replaces itself by default (opt-out: --no-self-update).
@@ -75,7 +74,6 @@ USER_DATA=""
 RAW_BASE="https://raw.githubusercontent.com/Ramb0N05/agent-sandbox-relay/worker"
 DOMAIN=""
 WORKER_TOKEN=""
-TTYD_PW=""
 ADMIN_PW=""
 RECREATE=0
 ASSUME_YES=0
@@ -84,7 +82,6 @@ SELF_UPDATE=1   # default: self-update against the repo copy; opt-out with --no-
 WORKDIR=""
 VM_USER="worker"
 ORIG_ARGS=()
-CONSOLE_RC=""
 SEED_ISO=""
 SELF_PATH=""   # absolute path of $0, resolved in main (used by the self-update)
 VM_IP=""       # set by wait_vm_ready_api (DHCP lease of the VM)
@@ -134,8 +131,6 @@ vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren (Update nur über s
   --worker-token TOKEN   Worker-Token für die Erstinstallation (optional; sonst nach dem Boot
                          über die vmadmin-UI setzen, der Agent läuft solange mit dem
                          Konstanten-Fallback und bekommt 401)
-  --ttyd-password PW     ttyd-Passwort (Installation: sonst wird eines generiert;
-                         Update: nur mit Angabe wird die ttyd-Unit angetastet)
   --admin-password PW    vmadmin-Passwort (Installation: sonst wird eines generiert;
                          Update: bleibt unberührt, Hash liegt in der VM)
   --raw-base URL         Repo-Quelle (Default: raw.githubusercontent.com, Branch worker)
@@ -168,7 +163,6 @@ parse_args() {
       --user-data) USER_DATA="${2:?--user-data braucht einen Wert}"; shift 2 ;;
       --domain) DOMAIN="${2:?--domain braucht einen Wert}"; shift 2 ;;
       --worker-token) WORKER_TOKEN="${2:?--worker-token braucht einen Wert}"; shift 2 ;;
-      --ttyd-password) TTYD_PW="${2:?--ttyd-password braucht einen Wert}"; shift 2 ;;
       --admin-password) ADMIN_PW="${2:?--admin-password braucht einen Wert}"; shift 2 ;;
       --raw-base) RAW_BASE="${2:?--raw-base braucht einen Wert}"; shift 2 ;;
       --no-self-update) SELF_UPDATE=0; shift ;;
@@ -276,7 +270,6 @@ fetch_repo_files() {
   for f in cloud-init/sandbox-worker-user-data.yaml \
            files/agent-sandbox-agent \
            files/agent-sandbox-agent.service \
-           files/ttyd-worker.service \
            files/vmadmin \
            files/vm-admin.service; do
     local target="$WORKDIR/$(printf '%s' "$f" | tr '/' '_')"
@@ -287,20 +280,19 @@ fetch_repo_files() {
 }
 
 render_user_data() {
-  # three placeholders; the worker-token fallback constant stays untouched on purpose
+  # two placeholders left (31st round: ttyd has no own password anymore);
+  # the worker-token fallback constant stays untouched on purpose
   # 21st round: --domain optional - without it the endpoint placeholder stays in the
   # user-data and the relay endpoint is set via vmadmin after the boot
-  [ -n "$TTYD_PW" ] || TTYD_PW="$(gen_password)"
   [ -n "$ADMIN_PW" ] || ADMIN_PW="$(gen_password)"
   local ud
   ud="$(cat "$WORKDIR/cloud-init_sandbox-worker-user-data.yaml")"
   if [ -n "$DOMAIN" ]; then
     ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
   fi
-  ud="${ud//<ttyd-passwort>/$TTYD_PW}"
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
   case "$ud" in
-    *"<ttyd-passwort>"*|*"<vm-admin-passwort>"*)
+    *"<vm-admin-passwort>"*|*"<ttyd-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;
   esac
   if [ -n "$DOMAIN" ]; then
@@ -333,130 +325,8 @@ render_user_data() {
 
 # ---------- serial console ----------
 
-console_run() {
-  # $1 = command for the VM shell (may span multiple lines), $2 = max seconds to wait for the RC marker
-  # raw output lands in $WORKDIR/console.out, CR-stripped (serial console sends CRLF) in
-  # $WORKDIR/console.clean - parse ONLY console.clean; the command's exit code in $CONSOLE_RC
-  # virsh(1): console [--force] [--safe] connects the guest serial console to stdin/stdout;
-  # --force disconnects stale sessions, --safe requires safe console handling
-  local cmd="$1" wait_s="${2:-60}"
-  local out="$WORKDIR/console.out"
-  local clean="$WORKDIR/console.clean"
-  local marker="__RC${RANDOM}__"
-  : > "$out"
-  CONSOLE_RC=""
-  {
-    sleep 2
-    printf '\n'
-    sleep 1
-    printf '%s\n' "$cmd"
-    printf 'echo "%s=$?"\n' "$marker"
-    # return as soon as the marker is in the output instead of sleeping the full wait_s
-    # (28th round: fixed wait made every poll take the full timeout)
-    i=0
-    while [ "$i" -lt "$wait_s" ]; do
-      sleep 2
-      # marker=[0-9]: the tty echoes the input line echo "__RCx__=$?" which contains
-      # marker= but NO digit - matching marker= alone would fire on the echo and kill
-      # the session before the command output arrived (reboot detection broken, 29th)
-      if grep -q "${marker}=[0-9]" "$out" 2>/dev/null; then break; fi
-      i=$((i + 2))
-    done
-  } | LC_ALL=C timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
-  tr -d '\r' < "$out" > "$clean"
-  # || true: while the VM is still booting there is no marker yet; without it pipefail
-  # fails the assignment and set -e kills the script silently (bug, 26th round)
-  CONSOLE_RC="$(grep -o "${marker}=[0-9]*" "$clean" | tail -1 | cut -d= -f2)" || true
-  if [ -z "$CONSOLE_RC" ]; then CONSOLE_RC="none"; fi
-}
-
 vm_running() {
   [ "$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)" = "running" ]
-}
-
-wait_vm_ready() {
-  # waits until cloud-init finished AND the first power_state reboot happened, then until
-  # the worker services are active; only then the caller prints the initial values
-  # sources: cloud-init CLI (status --wait, exit 0/1/2), boot stages doc (--wait blocks
-  # external scripts until done), internal files (boot-finished = last file cloud-init
-  # creates), kernel sysctl (/proc/sys/kernel/random/boot_id changes once per boot),
-  # power_state module (once per instance, after all other config modules),
-# proc(5) /proc/uptime (first field = seconds since boot; a reboot resets it)
-  need_cmd timeout
-  local deadline=$((SECONDS + 1500))
-  local boot1="" b="" up1="" u=""
-  local clean="$WORKDIR/console.clean"
-  # phase 1a: capture the boot_id IMMEDIATELY at first console contact - the script
-  # reaches this within seconds after virt-install, long before cloud-init finishes
-  # (~40 s) and the power_state reboot fires, so boot1 is always the FIRST boot's id.
-  # (29th round: capturing it only together with status:done could take the post-reboot
-  # id when the reboot cut the console session short, and phase 2 then waited forever
-  # for a boot_id change that had already happened)
-  info "Lese boot_id der ersten Boot-Phase über die serielle Konsole ..."
-  while [ $SECONDS -lt $deadline ] && [ -z "$boot1" ]; do
-    vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)).
-Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install) - dieses Skript setzt jetzt --events on_reboot=restart (einphasig). Log: journalctl -u libvirtd."
-    console_run 'cat /proc/sys/kernel/random/boot_id' 30 >/dev/null
-    b="$(tr -d '[:space:]' < "$clean" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
-    if [ -n "$b" ]; then boot1="$b"; fi
-    sleep 5
-  done
-  [ -n "$boot1" ] || die "kein Konsolen-Kontakt zur VM (Timeout). Konsole manuell: virsh --connect $LIBVIRT_URI console $VM_NAME"
-  info "boot_id erster Boot: $boot1. Warte auf cloud-init (erster Boot) ..."
-  # phase 1b: wait for cloud-init done; capture uptime then (reboot resets it, proc(5))
-  while [ $SECONDS -lt $deadline ]; do
-    vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)). Log: journalctl -u libvirtd."
-    console_run 'cloud-init status --wait --timeout 300; cat /proc/uptime; cloud-init status' 320 >/dev/null
-    if grep -q 'status: done' "$clean"; then
-      up1="$(grep -oE '[0-9]+\.[0-9]+' "$clean" | head -1)" || true
-      break
-    fi
-    sleep 10
-  done
-  grep -q 'status: done' "$clean" || die "cloud-init nicht fertig geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
-  info "cloud-init fertig (uptime bei done: ${up1:-?}s). Warte auf den power_state-Neustart ..."
-  local reboot_deadline=$((SECONDS + 900))
-  local rebooted=0 polls=0
-  while [ $SECONDS -lt $reboot_deadline ]; do
-    if ! vm_running; then
-      info "VM ist während des power_state-Neustarts ausgegangen - starte neu (virsh start; die persistente XML trägt on_reboot=restart)."
-      virsh_cmd start "$VM_NAME" || die "virsh start fehlgeschlagen"
-    fi
-    console_run 'cat /proc/sys/kernel/random/boot_id; cat /proc/uptime' 30 >/dev/null
-    b="$(tr -d '[:space:]' < "$clean" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
-    u="$(grep -oE '[0-9]+\.[0-9]+' "$clean" | head -1)" || true
-    # reboot detected by boot_id change (kernel sysctl) OR by uptime drop below the
-    # value captured at cloud-init-done (proc(5) /proc/uptime; a reboot resets it)
-    if [ -n "$b" ] && [ "$b" != "$boot1" ]; then rebooted=1; break; fi
-    if [ -n "$u" ] && [ -n "$up1" ]; then
-      if awk -v a="$u" -v c="$up1" 'BEGIN{exit !(a+10<c)}'; then rebooted=1; break; fi
-    fi
-    polls=$((polls + 1))
-    if [ $((polls % 4)) -eq 0 ]; then
-      info "noch kein Neustart erkannt (boot_id=${b:-?}, uptime=${u:-?}s, uptime-bei-done=${up1:-?}) ..."
-    fi
-    sleep 15
-  done
-  if [ "$rebooted" -eq 1 ]; then
-    info "Neustart erkannt (neue boot_id $b). Warte bis die VM wieder voll einsatzbereit ist ..."
-  else
-    info "WARNUNG: kein Neustart innerhalb von 900 s erkannt - prüfe weiter."
-  fi
-  local ready_deadline=$((SECONDS + 900))
-  while [ $SECONDS -lt $ready_deadline ]; do
-    vm_running || die "VM $VM_NAME ist während des Neustarts ausgegangen (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)). Manuell: virsh --connect $LIBVIRT_URI start $VM_NAME"
-    console_run 'cloud-init status --wait --timeout 300; systemctl is-active agent-sandbox-agent.service vm-admin.service ttyd-worker.service; systemctl is-system-running; cloud-init status' 320 >/dev/null
-    # parse console.clean (CR-stripped): serial console sends CRLF, so ^active$ would
-    # never match the raw output (28th round)
-    if grep -q 'status: done' "$clean" \
-       && [ "$(grep -c '^active$' "$clean")" -ge 3 ] \
-       && grep -qE '^(running|degraded)$' "$clean"; then
-      info "VM vollständig einsatzbereit (cloud-init done, agent/vm-admin/ttyd aktiv, System running/degraded)."
-      return 0
-    fi
-    sleep 15
-  done
-  die "VM nicht einsatzbereit geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
 }
 
 wait_vm_ready_api() {
@@ -584,7 +454,6 @@ cloud-init läuft nur einmal pro Overlay (per-instance); eine Neu-Provisionierun
 ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehenden VM)."
   fi
   need_cmd virt-install
-  need_cmd timeout
   build_seed
   # --noautoconsole: no automatic console connect, virt-install returns (virt-install(1))
   # --console pty,target_type=serial: serial console on a host pty, reachable via
@@ -615,11 +484,8 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --memballoon none \
     --controller usb,model=none \
     --noautoconsole
-  info "VM angelegt. Warte auf Einsatzbereitschaft: zuerst vmadmin-API-Poll (robust gegen parallele Konsolen-Sessions), Fallback serielle Konsole ..."
-  if ! wait_vm_ready_api; then
-    info "vmadmin-API-Pfad nicht erfolgreich - Fallback: Warten über die serielle Konsole."
-    wait_vm_ready
-  fi
+  info "VM angelegt. Warte auf Einsatzbereitschaft über die vmadmin-API (keine serielle Konsole) ..."
+  wait_vm_ready_api || die "vmadmin-API meldet nicht einsatzbereit (Timeout). Debug: vmadmin-UI http://<ip>/admin (Login admin), ttyd-Terminal, virsh console $VM_NAME (manuell)."
   detach_seed
   local ip="${VM_IP:-}"
   if [ -z "$ip" ]; then
@@ -658,7 +524,7 @@ print_initial_values() {
   info ""
   info "================ Initialwerte (bitte notieren) ================"
   if [ -n "$ip" ]; then info "VM-IP (DHCP):        $ip"; fi
-  info "ttyd-Passwort:      $TTYD_PW   (Web-Terminal, Login $VM_USER)"
+  if [ -n "$ip" ]; then info "Terminal (ttyd):     http://$ip:7681/ (in vmadmin eingebettet, Login $VM_USER)"; fi
   info "vmadmin-Passwort:   $ADMIN_PW   (Login admin; bitte in der UI ändern)"
   if [ -n "$ip" ]; then info "vmadmin-UI:         http://$ip/admin"; fi
   if [ -n "$WORKER_TOKEN" ]; then
@@ -688,22 +554,6 @@ print_initial_values() {
 
 # ---------- update path (serial console only, no relay API) ----------
 
-ship_console_file() {
-  # $1 = local temp file, $2 = name in /tmp/vm-update; transferred as base64 heredoc
-  # through the serial console (lines <= 76 chars stay below the tty canonical line
-  # length, base64(1) -w 76)
-  local f="$1" name="$2"
-  {
-    printf "cat > /tmp/vm-update/%s.b64 <<'__B64__'\n" "$name"
-    base64 -w 76 "$f"
-    printf '__B64__\n'
-    printf 'base64 -d /tmp/vm-update/%s.b64 > /tmp/vm-update/%s && rm -f /tmp/vm-update/%s.b64\n' "$name" "$name" "$name"
-  } > "$WORKDIR/ship.cmd"
-  console_run "$(cat "$WORKDIR/ship.cmd")" 120 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "base64-Transfer fehlgeschlagen: $name (Konsole erreichbar?)"
-  info "  $name übertragen (base64 über die serielle Konsole)."
-}
-
 render_agent() {
   # agent file: replace the placeholder endpoint only if it is still in there
   # 21st round: --domain optional - without it the placeholder stays; the agent
@@ -728,6 +578,7 @@ render_agent() {
   fi
 }
 
+
 update_vm() {
   local state
   state="$(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)"
@@ -735,75 +586,61 @@ update_vm() {
     die "VM ist nicht gestartet (Zustand: ${state:-unbekannt}). Erst starten:
   virsh --connect $LIBVIRT_URI start $VM_NAME"
   fi
-  need_cmd timeout
-  info "Update ausschließlich über die serielle Konsole (virsh console --force --safe; kein Relay-API-Zugriff) ..."
-  # VM-Benutzer prüfen: eine VM der alten Bereitstellung (anderer Benutzer) wird abgewiesen
-  console_run 'echo "USER=$(id -un)"' 30 >/dev/null
-  local user
-  user="$(grep -oE 'USER=[A-Za-z0-9_.-]+' "$WORKDIR/console.clean" | tail -1 | cut -d= -f2-)" || true
-  if [ "$user" != "$VM_USER" ]; then
-    die "In der VM ist Benutzer \"${user:-?}\" eingeloggt, erwartet ist \"$VM_USER\".
-Diese VM traegt noch die alte Bereitstellung (vor der Umbenennung). Neu anlegen:
-  $0 --recreate --yes ...   (LÖSCHT ALLE VM-DATEN)"
-  fi
-  info "VM-Benutzer bestätigt: $user (Autologin über serial-getty@ttyS0, agetty --autologin)"
+  need_cmd curl
+  need_cmd jq
+  local ip="" tries=0
+  while [ $tries -lt 24 ]; do
+    ip="$(vm_ip)"
+    if [ -n "$ip" ]; then break; fi
+    sleep 5
+    tries=$((tries + 1))
+  done
+  [ -n "$ip" ] || die "Keine DHCP-Lease innerhalb von 120 s (virsh net-dhcp-leases default)."
+  VM_IP="$ip"
+  local url="http://$ip/admin/api/state" auth="admin:$ADMIN_PW"
+  info "VM-IP $ip - lese Status ueber vmadmin-API ($url) ..."
+  local st
+  st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" \
+    || die "vmadmin-API nicht erreichbar (http://$ip/admin/api/state, Login admin). vm-admin aktiv? VM laeuft?"
+  # ohne --domain den laufenden Endpoint aus der VM uebernehmen (state.endpoint)
   if [ -z "$DOMAIN" ]; then
-    # keep the running endpoint when --domain is not given (endpoint file first,
-    # then the ENDPOINT constant of the installed agent)
-    console_run "ep=\$(cat /home/$VM_USER/.config/agent-sandbox/endpoint 2>/dev/null); [ -z \"\$ep\" ] && ep=\$(grep -o 'ENDPOINT = \"[^\"]*\"' /usr/local/bin/agent-sandbox-agent | head -1 | cut -d'\"' -f2); echo \"EP=\$ep\"" 30 >/dev/null
     local ep
-    ep="$(grep -oE 'EP=https?://[^ ]*' "$WORKDIR/console.clean" | tail -1 | cut -d= -f2-)" || true
+    ep="$(printf '%s' "$st" | jq -r '.endpoint // empty')" || true
     case "$ep" in
       ""|*"<agent-sandbox-relay-domain>"*) ;;
-      *) DOMAIN="$ep"; info "Laufender Relay-Endpoint aus der VM übernommen: $DOMAIN" ;;
+      *) DOMAIN="$ep"; info "Laufender Relay-Endpoint aus der VM uebernommen: $DOMAIN" ;;
     esac
   fi
   render_agent
-  console_run 'mkdir -p /tmp/vm-update' 30 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "Serielle Konsole nicht erreichbar. VM läuft? Manuell: virsh --connect $LIBVIRT_URI console $VM_NAME"
-  # unmodified files: the VM fetches them itself from the public repo into /tmp/vm-update
-  # (curl is installed by cloud-init, packages list in the user-data)
-  console_run "cd /tmp/vm-update && curl -fsSL $RAW_BASE/files/vmadmin -o vmadmin && curl -fsSL $RAW_BASE/files/agent-sandbox-agent.service -o agent.service && curl -fsSL $RAW_BASE/files/vm-admin.service -o vm-admin.service" 120 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "Fetch in der VM fehlgeschlagen (curl $RAW_BASE/files/...)"
-  # rendered files (agent with endpoint, ttyd unit with password) via base64 over the console
-  ship_console_file "$WORKDIR/agent.rendered" "agent"
-  if [ -n "$TTYD_PW" ]; then
-    # only with an explicit password: the unit carries it in ExecStart
-    local unit
-    unit="$(cat "$WORKDIR/files_ttyd-worker.service")"
-    unit="${unit//<ttyd-passwort>/$TTYD_PW}"
-    printf '%s' "$unit" > "$WORKDIR/ttyd-unit.rendered"
-    ship_console_file "$WORKDIR/ttyd-unit.rendered" "ttyd-worker.service"
+  info "Update ueber vmadmin-API (POST /admin/api/update; Dateien base64 nach /tmp/vm-update in der VM, sudo install, daemon-reload, Restarts; keine serielle Konsole, keine Relay-API) ..."
+  local files_json
+  files_json="$(jq -n \
+    --arg b_agent "$(base64 -w0 "$WORKDIR/agent.rendered")" \
+    --arg b_vmadmin "$(base64 -w0 "$WORKDIR/files_vmadmin")" \
+    --arg b_asvc "$(base64 -w0 "$WORKDIR/files_agent-sandbox-agent.service")" \
+    --arg b_vmadm "$(base64 -w0 "$WORKDIR/files_vm-admin.service")" \
+    '{files: [
+      {name: "agent", b64: $b_agent, target: "/usr/local/bin/agent-sandbox-agent", owner: "worker", mode: "0700"},
+      {name: "vmadmin", b64: $b_vmadmin, target: "/usr/local/bin/vmadmin", owner: "worker", mode: "0700"},
+      {name: "agent.service", b64: $b_asvc, target: "/etc/systemd/system/agent-sandbox-agent.service", owner: "root", mode: "0644"},
+      {name: "vm-admin.service", b64: $b_vmadm, target: "/etc/systemd/system/vm-admin.service", owner: "root", mode: "0644"}
+    ], restart: ["vm-admin.service", "agent-sandbox-agent.service"]}')"
+  local resp
+  resp="$(curl -fsS --max-time 60 -u "$auth" -H "Content-Type: application/json" \
+    -d "$files_json" "http://$ip/admin/api/update")" \
+    || die "POST /admin/api/update fehlgeschlagen (http://$ip/admin/api/update)"
+  printf '%s' "$resp" | jq -e '.ok == true' >/dev/null || die "Update von vmadmin abgelehnt: $resp"
+  sleep 3
+  st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
+  local agent_state
+  agent_state="$(printf '%s' "$st" | jq -r '.agent // "?"')" || true
+  if [ "$agent_state" = "active" ]; then
+    info "Update abgeschlossen: agent aktiv. Worker-Token und Admin-Hash wurden nicht angetastet."
   else
-    info "  ttyd-worker.service unberührt (Passwort steckt in der Unit; --ttyd-password zum Ändern)."
+    info "WARNUNG: agent meldet '$agent_state' - Journal in der vmadmin-UI (http://$ip/admin, Seite Dienste)."
   fi
-  # units carry no placeholders; root:root 0644 like the cloud-init write_files defaults
-  console_run "sudo install -o $VM_USER -g $VM_USER -m 0700 /tmp/vm-update/vmadmin /usr/local/bin/vmadmin && sudo install -o $VM_USER -g $VM_USER -m 0700 /tmp/vm-update/agent /usr/local/bin/agent-sandbox-agent && sudo install -o root -g root -m 0644 /tmp/vm-update/agent.service /etc/systemd/system/agent-sandbox-agent.service && sudo install -o root -g root -m 0644 /tmp/vm-update/vm-admin.service /etc/systemd/system/vm-admin.service" 90 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "install in der VM fehlgeschlagen"
-  if [ -n "$TTYD_PW" ]; then
-    console_run "sudo install -o root -g root -m 0644 /tmp/vm-update/ttyd-worker.service /etc/systemd/system/ttyd-worker.service" 60 >/dev/null
-    [ "$CONSOLE_RC" = "0" ] || die "ttyd-Unit-Install fehlgeschlagen"
-  fi
-  console_run "sudo systemctl daemon-reload && sudo systemctl restart vm-admin.service" 60 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "daemon-reload / vm-admin-Restart fehlgeschlagen"
-  if [ -n "$TTYD_PW" ]; then
-    console_run "sudo systemctl restart ttyd-worker.service" 60 >/dev/null
-    [ "$CONSOLE_RC" = "0" ] || die "ttyd-Restart fehlgeschlagen"
-  fi
-  # agent last, delayed through a transient timer (systemd-run --on-active=3s,
-  # systemd-run(1)) so this console session can still finish cleanly
-  console_run "sudo systemd-run --on-active=3s systemctl restart agent-sandbox-agent.service" 30 >/dev/null
-  [ "$CONSOLE_RC" = "0" ] || die "Agent-Restart (systemd-run) fehlgeschlagen"
-  sleep 6
-  console_run "systemctl is-active agent-sandbox-agent.service vm-admin.service ttyd-worker.service" 30 >/dev/null
-  if [ "$CONSOLE_RC" = "0" ]; then
-    info "Update abgeschlossen: agent/vm-admin/ttyd aktiv. Worker-Token, Admin-Hash und ttyd-Passwort wurden nicht angetastet."
-  else
-    info "WARNUNG: nicht alle Units aktiv - prüfen: virsh --connect $LIBVIRT_URI console $VM_NAME"
-  fi
-  info "Heruntergeladene Dateien liegen nur in /tmp/vm-update (VM, temporär) und im mktemp-Verzeichnis des Skripts (per trap entfernt); dauerhaft bleiben nur die Images."
+  info "Dateien liegen nur in /tmp/vm-update (VM, temporaer) und im mktemp-Verzeichnis des Skripts (per trap entfernt); dauerhaft bleiben nur die Images."
 }
-
 confirm_recreate() {
   info "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   info "! --recreate LÖSCHT ALLE DATEN DER VM (Overlay wird gelöscht)!"
@@ -854,7 +691,7 @@ main() {
         info "Dry-Run: VM $VM_NAME existiert - mit --recreate würde sie verworfen (virsh destroy falls laufend, dann undefine + Overlay löschen: $DISK) und danach neu angelegt (Install-Pfad)."
         return 0
       fi
-      info "Dry-Run: VM $VM_NAME existiert - es würde der Update-Pfad über die serielle Konsole laufen (virsh console --force --safe, keine Relay-API)."
+      info "Dry-Run: VM $VM_NAME existiert - es würde der Update-Pfad über die vmadmin-API laufen (POST /admin/api/update, keine serielle Konsole, keine Relay-API)."
       render_agent
       return 0
     fi

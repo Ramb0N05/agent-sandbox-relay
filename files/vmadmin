@@ -5,7 +5,8 @@
 # (round 14: basic challenges trigger native browser login dialogs).
 # Python stdlib only (http.server), no packages - provisioned via cloud-init.
 # sources: AmbientCapabilities=CAP_NET_BIND_SERVICE (systemd.exec, port < 1024 without root),
-# ttyd -c user:password (no credential file, hence the colon ban),
+# ttyd default port 7681, no -c credential (ttyd sends no X-Frame-Options/frame-ancestors,
+# so it can be iframed; vmadmin CSP allows frame-src http://<host>:7681),
 # Python http.server (BaseHTTPRequestHandler/ThreadingHTTPServer).
 import base64
 import hashlib
@@ -27,9 +28,9 @@ CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "agent-sandbox")
 TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
 ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
 ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
-TTYD_UNIT_PATH = "/etc/systemd/system/ttyd-worker.service"
 AGENT_SERVICE = "agent-sandbox-agent"
 TTYD_SERVICE = "ttyd-worker"
+TTYD_PORT = 7681
 
 # lockout per client IP like the relay: 5 failures -> 300 s, doubling up to 3600 s
 LOCK_FAILS = 5
@@ -69,14 +70,6 @@ def validate_endpoint(ep):
     return urlsplit(ep).hostname is not None
 
 
-def validate_ttyd_pw(pw):
-    # ttyd only supports -c user:password (no credential file): ':' not allowed;
-    # printable ASCII without whitespace, otherwise the ExecStart line breaks
-    return isinstance(pw, str) and pw.isascii() and 1 <= len(pw) <= 64 \
-        and ":" not in pw and not any(c.isspace() for c in pw) \
-        and all(0x21 <= ord(c) <= 0x7E for c in pw)
-
-
 def validate_admin_pw(pw):
     # own login password: 8-128 chars, printable (spaces allowed)
     return isinstance(pw, str) and 8 <= len(pw) <= 128 \
@@ -98,22 +91,6 @@ def write_atomic(path, content, mode=0o600):
         except OSError:
             pass
         raise
-
-
-def ttyd_unit_content(pw):
-    # password stays in ExecStart plaintext (ttyd has no credential file; ps-readable -
-    # documented weakness as in the assessment; the VM has only the user worker)
-    return (
-        "[Unit]\n"
-        "Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)\n"
-        "After=network.target\n\n"
-        "[Service]\n"
-        "User=worker\n"
-        "ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -c worker:" + pw + " -m 2 -w /home/worker bash -l\n"
-        "Restart=on-failure\n\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n"
-    )
 
 
 def run(cmd_argv, sudo=False):
@@ -320,6 +297,7 @@ label.field input{width:100%}
     <button data-page="status">Status</button>
     <button data-page="einstellungen">Einstellungen</button>
     <button data-page="dienste">Dienste</button>
+    <button data-page="terminal">Terminal</button>
     <button data-page="logout">Logout</button>
   </nav>
 </header>
@@ -383,18 +361,19 @@ label.field input{width:100%}
     <div class="row"><button class="primary" id="btn-token">Token speichern (Agent startet neu)</button></div>
     <p class="muted">Nach dem Speichern zieht der Agent Jobs mit dem neuen Token; ein restart ist nötig, weil der Agent das Token beim Start liest.</p>
   </div>
-  <h2>ttyd-Passwort <span class="muted">(Web-Terminal, nur Host-Zugriff)</span></h2>
-  <div class="card">
-    <p class="muted">Format-Bedingung von ttyd (nur -c user:password, kein Credential-File): kein Doppelpunkt, keine Leerzeichen, druckbare ASCII-Zeichen.</p>
-    <label class="field">Neues ttyd-Passwort
-      <input id="ttydpw" type="password" placeholder="Passwort" autocomplete="new-password"></label>
-    <div class="row"><button class="primary" id="btn-ttyd">Passwort setzen (ttyd startet neu)</button></div>
-  </div>
   <h2>Admin-Passwort <span class="muted">(dieses Login)</span></h2>
   <div class="card">
     <label class="field">Aktuelles Passwort <input id="oldpw" type="password" autocomplete="current-password"></label>
     <label class="field">Neues Passwort (8-128 Zeichen) <input id="newpw" type="password" autocomplete="new-password"></label>
     <div class="row"><button class="primary" id="btn-pw">Passwort ändern</button></div>
+  </div>
+</section>
+
+<section class="page" id="page-terminal">
+  <h2>Terminal <span class="muted">(ttyd, Port 7681 - nur Host-Zugriff via libvirt-NAT ohne DNAT)</span></h2>
+  <div class="card">
+    <p class="muted">Web-Terminal der VM (ttyd-worker.service, Login worker), in vmadmin eingebettet. ttyd l&auml;uft ohne eigenes -c-Credential (keine zweite Passwortabfrage; ttyd sendet kein X-Frame-Options, das iframe ist via CSP frame-src erlaubt).</p>
+    <iframe id="ttyd-frame" style="width:100%;height:60vh;border:1px solid #333;border-radius:6px;background:#000" title="ttyd Terminal"></iframe>
   </div>
 </section>
 
@@ -561,14 +540,6 @@ async function saveToken(){
   toast("Token gesetzt, Agent neu gestartet");
   refreshStatus();
 }
-async function saveTtyd(){
-  var pw = document.getElementById("ttydpw").value;
-  var ok = await showConfirm("ttyd-Passwort", "Passwort setzen und ttyd neu starten?");
-  if (!ok){ return; }
-  await api("/admin/api/ttyd", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({password: pw}) });
-  document.getElementById("ttydpw").value = "";
-  toast("ttyd-Passwort gesetzt, ttyd neu gestartet");
-}
 async function changePw(){
   var oldpw = document.getElementById("oldpw").value;
   var newpw = document.getElementById("newpw").value;
@@ -591,6 +562,7 @@ async function refreshJournal(){
   try { d = await api("/admin/api/journal"); } catch (e){ return; }
   document.getElementById("journal").textContent = d.log || "(leer)";
 }
+document.getElementById("ttyd-frame").src = "http://" + location.hostname + ":7681/";
 document.getElementById("btn-login").addEventListener("click", doLogin);
 document.getElementById("pw").addEventListener("keydown", function(e){ if (e.key === "Enter"){ doLogin(); } });
 document.getElementById("btn-status-refresh").addEventListener("click", refreshStatus);
@@ -602,7 +574,6 @@ document.getElementById("auto").addEventListener("change", function(){
 });
 document.getElementById("btn-ep").addEventListener("click", saveEndpoint);
 document.getElementById("btn-token").addEventListener("click", saveToken);
-document.getElementById("btn-ttyd").addEventListener("click", saveTtyd);
 document.getElementById("btn-pw").addEventListener("click", changePw);
 document.getElementById("btn-restart-agent").addEventListener("click", function(){ restartService("agent-sandbox-agent"); });
 document.getElementById("btn-restart-ttyd").addEventListener("click", function(){ restartService("ttyd-worker"); });
@@ -647,8 +618,11 @@ class Handler(BaseHTTPRequestHandler):
     def _admin_page(self):
         nonce = secrets.token_urlsafe(16)
         html = HTML.replace("__NONCE__", nonce)
+        host = (self.headers.get("Host") or "localhost").split(":")[0]
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+            host = "localhost"
         csp = ("default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; "
-               "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+               "connect-src 'self'; frame-src http://" + host + ":7681; base-uri 'none'; frame-ancestors 'none'")
         self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": csp})
 
     def _authed(self):
@@ -671,8 +645,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send_json(500, {"error": str(e)})
                 return
-            if self.path == "/admin/api/journal":
-                r = run(["journalctl", "-n", "30", "-u", AGENT_SERVICE, "--no-pager", "-o", "short"], sudo=True)
+            if self.path.startswith("/admin/api/journal"):
+                q = dict(pp.split("=", 1) for pp in urlsplit(self.path).query.split("&") if "=" in pp)
+                unit = q.get("unit", AGENT_SERVICE + ".service")
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+(\.service)?", unit):
+                    self._send_json(422, {"error": "ungueltige Unit"}); return
+                r = run(["journalctl", "-n", "30", "-u", unit, "--no-pager", "-o", "short"], sudo=True)
                 self._send_json(200 if r.returncode == 0 else 500,
                                 {"log": r.stdout if r.returncode == 0 else r.stderr.strip()})
                 return
@@ -716,23 +694,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200 if r.returncode == 0 else 500,
                                 {"ok": r.returncode == 0, "restart": r.stdout.strip() or r.stderr.strip() or "ok"})
                 return
-            if self.path == "/admin/api/ttyd" and "password" in data:
-                if not validate_ttyd_pw(data["password"]):
-                    self._send_json(422, {"error": "Passwort ungültig (1-64 druckbare ASCII, kein Doppelpunkt, kein Whitespace)"})
-                    return
-                fd, tmp = tempfile.mkstemp(prefix="ttyd-unit-")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(ttyd_unit_content(data["password"]))
-                os.chmod(tmp, 0o644)
-                r = run(["install", "-m", "644", tmp, TTYD_UNIT_PATH], sudo=True)
-                os.unlink(tmp)
-                if r.returncode != 0:
-                    self._send_json(500, {"error": r.stderr.strip() or "unit-schreibfehler"})
-                    return
-                run(["systemctl", "daemon-reload"], sudo=True)
-                r2 = run(["systemctl", "restart", TTYD_SERVICE], sudo=True)
-                self._send_json(200 if r2.returncode == 0 else 500, {"ok": r2.returncode == 0})
-                return
             if self.path == "/admin/api/password" and "old" in data and "new" in data:
                 stored = stored_admin_hash()
                 if not stored or not secrets.compare_digest(sha256_hex(data["old"]).encode(), stored.encode()):
@@ -743,6 +704,42 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 write_atomic(ADMIN_HASH_FILE, sha256_hex(data["new"]) + "\n")
                 self._send_json(200, {"ok": True})
+                return
+            if self.path == "/admin/api/update" and isinstance(data.get("files"), list):
+                # Datei-Update vom Host (vm-install.sh): base64-Dateien landen in
+                # /tmp/vm-update (temporaer), werden per sudo install platziert,
+                # dann daemon-reload + Restarts in angegebener Reihenfolge.
+                allowed_prefixes = ("/usr/local/bin/", "/etc/systemd/system/")
+                os.makedirs("/tmp/vm-update", exist_ok=True)
+                installed = []
+                for f in data["files"]:
+                    if not isinstance(f, dict):
+                        self._send_json(422, {"error": "Dateieintrag kein Objekt"}); return
+                    name = f.get("name", ""); target = f.get("target", "")
+                    owner = f.get("owner", "root"); mode = str(f.get("mode", "0644"))
+                    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) \
+                       or not target.startswith(allowed_prefixes) \
+                       or not os.path.isabs(target) or "/../" in target \
+                       or owner not in ("worker", "root") or not re.fullmatch(r"[0-7]{3,4}", mode):
+                        self._send_json(422, {"error": "ungueltige Datei-Angabe: " + str(name)}); return
+                    try:
+                        content = base64.b64decode(f.get("b64", ""), validate=True)
+                    except Exception:
+                        self._send_json(422, {"error": "b64 ungueltig: " + name}); return
+                    src = os.path.join("/tmp/vm-update", name)
+                    with open(src, "wb") as fh:
+                        fh.write(content)
+                    os.chmod(src, 0o600)
+                    r = run(["install", "-o", owner, "-g", owner, "-m", mode, src, target], sudo=True)
+                    if r.returncode != 0:
+                        self._send_json(500, {"error": "install fehlgeschlagen: " + name, "detail": r.stderr.strip()}); return
+                    installed.append(target)
+                run(["systemctl", "daemon-reload"], sudo=True)
+                for unit in data.get("restart", []):
+                    if not re.fullmatch(r"[A-Za-z0-9_.-]+(\.service)?", str(unit)):
+                        self._send_json(422, {"error": "ungueltige Unit: " + str(unit)}); return
+                    run(["systemctl", "restart", str(unit)], sudo=True)
+                self._send_json(200, {"ok": True, "installed": installed})
                 return
             if self.path == "/admin/api/service" and "unit" in data:
                 unit = data["unit"]

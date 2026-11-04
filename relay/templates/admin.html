@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agent-sandbox-relay Verwaltung</title>
+<title>sandbox-relay Verwaltung</title>
 <style>
 :root{
   --bg:#0f1216;--panel:#171b21;--panel2:#1d222a;--line:#2a313b;--text:#e6e9ee;
@@ -108,7 +108,7 @@ table.rwd td.cmdcell{font-size:.8rem}
 <body>
 
 <header>
-  <h1>agent-sandbox-<span>relay</span></h1>
+  <h1>sandbox-relay <span>Verwaltung</span></h1>
   <div class="muted" id="mode"></div>
   <nav id="nav">
     <button data-page="status">Status</button>
@@ -496,10 +496,10 @@ function showLogin(msg){
 async function tryLogin(user, pw, fromSession){
   USER = user; PW = pw;
   try {
-    await api("/admin/api/state");
+    var d = await api("/admin/api/state");
     sessionStorage.setItem("relayadminuser", USER);
     sessionStorage.setItem("relayadminpw", PW);
-    document.getElementById("mode").textContent = "angemeldet als " + USER;
+    document.getElementById("mode").textContent = "angemeldet als " + USER + " · v" + (d.version || "?");
     showPage(pageFromHash());
     return true;
   } catch (e){
@@ -523,6 +523,7 @@ function logout(){
 async function refreshStatus(){
   var d;
   try { d = await api("/admin/api/state"); } catch (e){ return; }
+  document.getElementById("mode").textContent = "angemeldet als " + USER + " · v" + (d.version || "?");
   document.getElementById("st-workers").textContent = d.workers;
   document.getElementById("st-submitters").textContent = d.submitters;
   document.getElementById("st-jobs").textContent = d.jobs;

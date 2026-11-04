@@ -366,3 +366,19 @@ selbst. Der Container hat keine veröffentlichten Ports (nur Traefik im
 proxy-Netzwerk erreicht ihn), der Header kann also nur von Traefik
 stammen - zusammen mit strip-xfcc ist ein Vortäuschen ausgeschlossen.
 Ohne AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256 bleibt alles beim Basic-Login.
+
+## Versionierung (39. Runde)
+
+- Der Relay liest seinen Versionsstand beim Start aus `relay/VERSION` (voller
+  main-Commit-SHA; Fallback `0.0.1-dev`) und liefert ihn in `GET /admin/api/state`
+  als `version`; die Admin-UI zeigt ihn unter der „angemeldet“-Info
+  (`angemeldet als admin · v<sha>`). Nach jedem Push auf main:
+  `tools/bump-version.sh && git add relay/VERSION && git commit -m "version bump" && git push origin main`
+  (Portainer baut aus der Git-URL am HEAD, ohne Build-Args - die Datei im Baum ist
+  die verlässliche Quelle). Verifikation nach dem Webhook-Deploy: `GET /admin` zeigt
+  `<title>sandbox-relay Verwaltung</title>`; der laufende Stand steht in
+  `/admin/api/state` (Login nötig).
+- Die VM-Seite (vmadmin) versioniert separat: `/etc/vmadmin.version`
+  (`worker-<sha7>`), geschrieben von cloud-init beim Erstboot (install-script
+  ersetzt `__VMADMIN_VERSION__` in der user-data beim Rendern) und von
+  `run_vm_update` bei jedem Update; Anzeige unter der „angemeldet“-Info in vmadmin.

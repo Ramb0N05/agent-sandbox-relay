@@ -20,6 +20,19 @@ def admin_client_cert_fingerprints():
 
 def admin_mtls_required():
     return ADMIN_MTLS_REQUIRED.strip().lower() in ("1", "true", "yes", "on")
+
+
+def version():
+    # Versionsstand des Relays: relay/VERSION (voller main-Commit-SHA), gepflegt von
+    # tools/bump-version.sh nach jedem Push auf main; Fallback dev (39th round)
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="ascii") as f:
+            v = f.read().strip()
+            if v:
+                return v
+    except OSError:
+        pass
+    return "0.0.1-dev"
 OUTMAX = 8 * 1024 * 1024  # Result-Output-Deckel 8 MiB (Nutzerentscheidung 11/2026, Abschnitt 10.7)
 FILEMAX = 8 * 1024 * 1024  # raw size per file in the file store (section 10.8)
 FILESTOREMAX = 64  # file store entries (FIFO, oldest dropped first)

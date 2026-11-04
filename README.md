@@ -77,7 +77,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (zweiunddreißigste Runde). Install: holt den aktuellen worker-Zweig per
+  (dreiunddreißigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -246,7 +246,15 @@ eingebettet). 32. Runde: (a) vm-admin Bounding-Set enthaelt CAP_SETUID/SETGID/
   wird raw durchgereicht; iframe same-origin, CSP frame-src 'self'); (c) PAGES um
   "terminal" ergaenzt (sonst sprang die Terminal-Seite auf Status) und Seiten ohne
   Login nicht mehr aufrufbar (nur Login-Seite, Nav versteckt); (d) ttyd-Unit mit
-  Restart=always + StartLimitIntervalSec=0.
+  Restart=always + StartLimitIntervalSec=0. 33. Runde: Logging
+  (/tmp/vm-install-<ts>.log + /var/log/vm-install.log falls beschreibbar +
+  --log-file; jede Meldung mit Timestamp ins Log, Farben nur am TTY); API-Poll
+  5 s, Fortschritt nur bei Statusaenderung; --recreate trennt vor dem Destroy die
+  Konsolen-Session (virsh console --force, sonst hängt das virt-manager-GUI);
+  Update setzt bei --domain den Endpoint per POST /admin/api/endpoint; Agent
+  meldet den Endpoint-Platzhalter Klartext statt [Errno -2]; vmadmin hat
+  Session-Cookie-Login (POST /admin/api/login), damit das /terminal-iframe
+  ohne Authorization-Header authentifiziert ist.
 
 Self-Update: vor jedem echten Lauf vergleicht das Skript sha256($0) mit der
 Repo-Kopie unter $RAW_BASE/vm/vm-install.sh (raw.githubusercontent.com liefert

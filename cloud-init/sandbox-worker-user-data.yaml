@@ -236,14 +236,21 @@ write_files:
   - path: /etc/systemd/system/ttyd-worker.service
     content: |
       [Unit]
-      Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)
+      Description=ttyd Web-Terminal (nur ueber vmadmin-Proxy /terminal, 127.0.0.1:7681)
       After=network.target
+      StartLimitIntervalSec=0
 
       [Service]
       User=worker
-      ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -m 2 -w /home/worker bash -l
-      Restart=on-failure
+      # -i 127.0.0.1: ttyd ist ausschliesslich lokal erreichbar, nur der authentifizierte
+      # vmadmin-Proxy (/terminal/*) reicht ihn durch. -b /terminal: base-path fuer den Proxy
+      # (ttyd.1: index <base>/, websocket <base>/ws).
+      ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 7681 -b /terminal -W -t enableZmodem=true -m 2 -w /home/worker bash -l
+      Restart=always
+      RestartSec=2
 
+      [Install]
+      WantedBy=multi-user.target
   - path: /usr/local/bin/vmadmin
     owner: worker:worker
     permissions: '0700'
@@ -266,6 +273,7 @@ write_files:
       import re
       import secrets
       import shutil
+      import socket
       import subprocess
       import tempfile
       import threading
@@ -623,7 +631,7 @@ write_files:
       <section class="page" id="page-terminal">
         <h2>Terminal <span class="muted">(ttyd, Port 7681 - nur Host-Zugriff via libvirt-NAT ohne DNAT)</span></h2>
         <div class="card">
-          <p class="muted">Web-Terminal der VM (ttyd-worker.service, Login worker), in vmadmin eingebettet. ttyd l&auml;uft ohne eigenes -c-Credential (keine zweite Passwortabfrage; ttyd sendet kein X-Frame-Options, das iframe ist via CSP frame-src erlaubt).</p>
+          <p class="muted">Web-Terminal der VM (ttyd-worker.service, Login worker). ttyd lauscht nur auf 127.0.0.1:7681 in der VM und ist ausschliesslich ueber diesen authentifizierten vmadmin-Proxy (/terminal/) erreichbar; die vmadmin-Anmeldung schuetzt ihn (keine zweite Passwortabfrage).</p>
           <iframe id="ttyd-frame" style="width:100%;height:60vh;border:1px solid #333;border-radius:6px;background:#000" title="ttyd Terminal"></iframe>
         </div>
       </section>
@@ -705,9 +713,10 @@ write_files:
           dlgConfirm.showModal();
         });
       }
-      var PAGES = ["login", "status", "einstellungen", "dienste"];
+      var PAGES = ["login", "status", "einstellungen", "dienste", "terminal"];
       function showPage(name){
         if (name === "logout"){ logout(); return; }
+        if (!PW && name !== "login"){ showLogin(""); return; }  // ohne Login nur die Login-Seite
         PAGES.forEach(function(p){
           var el = document.getElementById("page-" + p);
           if (el){ el.classList.toggle("active", p === name); }
@@ -726,6 +735,8 @@ write_files:
       }
       function showLogin(msg){
         PAGES.forEach(function(p){ document.getElementById("page-" + p).classList.toggle("active", p === "login"); });
+        document.getElementById("nav").style.display = "none";
+        document.getElementById("mode").textContent = "";
         if (msg){ document.getElementById("loginmsg").textContent = msg; }
       }
       async function tryLogin(pw, fromSession){
@@ -733,6 +744,7 @@ write_files:
         try {
           await api("/admin/api/state");
           sessionStorage.setItem("vmadminpw", PW);
+          document.getElementById("nav").style.display = "";
           document.getElementById("mode").textContent = "angemeldet (admin)";
           showPage(pageFromHash());
           return true;
@@ -813,7 +825,7 @@ write_files:
         try { d = await api("/admin/api/journal"); } catch (e){ return; }
         document.getElementById("journal").textContent = d.log || "(leer)";
       }
-      document.getElementById("ttyd-frame").src = "http://" + location.hostname + ":7681/";
+      document.getElementById("ttyd-frame").src = "/terminal/";
       document.getElementById("btn-login").addEventListener("click", doLogin);
       document.getElementById("pw").addEventListener("keydown", function(e){ if (e.key === "Enter"){ doLogin(); } });
       document.getElementById("btn-status-refresh").addEventListener("click", refreshStatus);
@@ -869,11 +881,8 @@ write_files:
           def _admin_page(self):
               nonce = secrets.token_urlsafe(16)
               html = HTML.replace("__NONCE__", nonce)
-              host = (self.headers.get("Host") or "localhost").split(":")[0]
-              if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
-                  host = "localhost"
               csp = ("default-src 'none'; script-src 'nonce-" + nonce + "'; style-src 'unsafe-inline'; "
-                     "connect-src 'self'; frame-src http://" + host + ":7681; base-uri 'none'; frame-ancestors 'none'")
+                     "connect-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'")
               self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": csp})
 
           def _authed(self):
@@ -883,7 +892,82 @@ write_files:
                   return False
               return True
 
+          def _proxy_terminal(self):
+              # ttyd lauscht nur auf 127.0.0.1:TTYD_PORT (ttyd -i 127.0.0.1) - erreichbar
+              # ausschliesslich ueber diesen Proxy, der das vmadmin-Login verlangt.
+              # ttyd laeuft mit -b /terminal (base-path), d.h. index /terminal/ und
+              # websocket /terminal/ws (ttyd.1); der Proxy reicht /terminal/* 1:1 durch
+              # (HTTP komplett, WS nach dem 101-Head bidirektional raw).
+              if not self._authed():
+                  return
+              is_ws = "websocket" in (self.headers.get("Upgrade") or "").lower()
+              try:
+                  up = socket.create_connection(("127.0.0.1", TTYD_PORT), timeout=10)
+              except OSError:
+                  self._send_json(502, {"error": "ttyd nicht erreichbar (127.0.0.1:%d) - ttyd-worker aktiv?" % TTYD_PORT})
+                  return
+              req_lines = ["GET %s HTTP/1.1" % self.path, "Host: 127.0.0.1:%d" % TTYD_PORT]
+              for k, v in self.headers.items():
+                  lk = k.lower()
+                  if lk in ("host", "content-length"):
+                      continue
+                  if lk == "connection":
+                      v = "Upgrade" if is_ws else "close"
+                  req_lines.append("%s: %s" % (k, v))
+              up.sendall(("\r\n".join(req_lines) + "\r\n\r\n").encode("utf-8"))
+              self.close_connection = True
+              if not is_ws:
+                  try:
+                      while True:
+                          d = up.recv(65536)
+                          if not d:
+                              break
+                          self.connection.sendall(d)
+                  except OSError:
+                      pass
+                  finally:
+                      up.close()
+                  return
+              head = b""
+              while b"\r\n\r\n" not in head:
+                  chunk = up.recv(4096)
+                  if not chunk:
+                      up.close()
+                      self._send_json(502, {"error": "ttyd antwortet nicht auf WS-Upgrade"})
+                      return
+                  head += chunk
+              head_part, _, rest = head.partition(b"\r\n\r\n")
+              self.connection.sendall(head_part + b"\r\n\r\n")
+
+              def relay(src, dst, seed=b""):
+                  try:
+                      if seed:
+                          dst.sendall(seed)
+                      while True:
+                          d = src.read1(65536) if hasattr(src, "read1") else src.recv(65536)
+                          if not d:
+                              break
+                          dst.sendall(d)
+                  except OSError:
+                      pass
+                  finally:
+                      try:
+                          dst.shutdown(socket.SHUT_WR)
+                      except OSError:
+                          pass
+
+              t = threading.Thread(target=relay, args=(up, self.connection, rest), daemon=True)
+              t.start()
+              relay(self.rfile, up)  # blockiert bis der Client trennt
+              try:
+                  up.close()
+              except OSError:
+                  pass
+
           def do_GET(self):
+              if self.path == "/terminal" or self.path.startswith("/terminal/"):
+                  self._proxy_terminal()
+                  return
               if self.path == "/admin":
                   self._admin_page()
                   return
@@ -1022,10 +1106,14 @@ write_files:
       ExecStart=/usr/local/bin/vmadmin
       Restart=always
       RestartSec=5
-      # port 80 without root: AmbientCapabilities passes CAP_NET_BIND_SERVICE to the
-      # process, CapabilityBoundingSet cuts everything else off (minimal exposure).
+      # port 80 without root: AmbientCapabilities grants CAP_NET_BIND_SERVICE to the
+      # process. CapabilityBoundingSet is the ceiling for everything the process and its
+      # children can gain - including via setuid binaries like sudo (systemd.exec(5)):
+      # sudo needs CAP_SETUID/CAP_SETGID to elevate, install needs CAP_CHOWN/
+      # CAP_DAC_OVERRIDE/CAP_FOWNER. Without them sudo fails with "unable to change to
+      # root gid: Operation not permitted" (observed 32nd round).
       AmbientCapabilities=CAP_NET_BIND_SERVICE
-      CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+      CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
 
       [Install]
       WantedBy=multi-user.target

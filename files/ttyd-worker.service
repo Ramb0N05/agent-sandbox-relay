@@ -1,11 +1,16 @@
 [Unit]
-Description=ttyd Web-Terminal (Transportoption F, nur Host-Zugriff)
+Description=ttyd Web-Terminal (nur ueber vmadmin-Proxy /terminal, 127.0.0.1:7681)
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 User=worker
-ExecStart=/usr/bin/ttyd -W -t enableZmodem=true -m 2 -w /home/worker bash -l
-Restart=on-failure
+# -i 127.0.0.1: ttyd ist ausschliesslich lokal erreichbar, nur der authentifizierte
+# vmadmin-Proxy (/terminal/*) reicht ihn durch. -b /terminal: base-path fuer den Proxy
+# (ttyd.1: index <base>/, websocket <base>/ws).
+ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 7681 -b /terminal -W -t enableZmodem=true -m 2 -w /home/worker bash -l
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

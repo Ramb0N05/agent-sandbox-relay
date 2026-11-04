@@ -76,7 +76,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (achtundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
+  (neunundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -104,7 +104,13 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   ^active$ nie) und console_run kehrt sofort zurück, sobald der RC-Marker
   im Output steht (statt die volle Wartezeit zu schlafen); boot_id der ersten
   Phase wird als ERSTES gelesen, damit ein Neustart waehrend der cloud-init-
-  Phase nicht als "noch kein Neustart" fehlinterpretiert wird. Image-Pfade kommen aus der libvirt-Konfig
+  Phase nicht als "noch kein Neustart" fehlinterpretiert wird. 29. Runde:
+  Reboot-Erkennung nochmal robust: boot_id wird SOFORT beim ersten Konsolen-
+  kontakt gelesen (Phase 1a, noch vor cloud-init-done), damit boot1 sicher die
+  erste Boot-Phase ist; als zweites Signal gilt ein Uptime-Abfall gegen den
+  Stand bei cloud-init-done (/proc/uptime, proc(5)); dazu frueherkennung per
+  marker=[0-9] (das tty-Echo der Marker-Zeile enthaelt marker= ohne Ziffer und
+  darf den Feeder nicht frueh beenden). Image-Pfade kommen aus der libvirt-Konfig
   (virsh pool-dumpxml default -> <target><path>), nicht aus einem
   hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
   KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt

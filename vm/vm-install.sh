@@ -351,7 +351,10 @@ console_run() {
     i=0
     while [ "$i" -lt "$wait_s" ]; do
       sleep 2
-      if grep -q "${marker}=" "$out" 2>/dev/null; then break; fi
+      # marker=[0-9]: the tty echoes the input line echo "__RCx__=$?" which contains
+      # marker= but NO digit - matching marker= alone would fire on the echo and kill
+      # the session before the command output arrived (reboot detection broken, 29th)
+      if grep -q "${marker}=[0-9]" "$out" 2>/dev/null; then break; fi
       i=$((i + 2))
     done
   } | LC_ALL=C timeout $((wait_s + 25)) virsh --connect "$LIBVIRT_URI" console "$VM_NAME" --force --safe >"$out" 2>&1 || true
@@ -372,36 +375,61 @@ wait_vm_ready() {
   # sources: cloud-init CLI (status --wait, exit 0/1/2), boot stages doc (--wait blocks
   # external scripts until done), internal files (boot-finished = last file cloud-init
   # creates), kernel sysctl (/proc/sys/kernel/random/boot_id changes once per boot),
-  # power_state module (once per instance, after all other config modules)
+  # power_state module (once per instance, after all other config modules),
+# proc(5) /proc/uptime (first field = seconds since boot; a reboot resets it)
   need_cmd timeout
   local deadline=$((SECONDS + 1500))
-  local boot1="" b=""
+  local boot1="" b="" up1="" u=""
   local clean="$WORKDIR/console.clean"
-  info "Warte auf cloud-init (erster Boot) über die serielle Konsole ..."
-  while [ $SECONDS -lt $deadline ]; do
+  # phase 1a: capture the boot_id IMMEDIATELY at first console contact - the script
+  # reaches this within seconds after virt-install, long before cloud-init finishes
+  # (~40 s) and the power_state reboot fires, so boot1 is always the FIRST boot's id.
+  # (29th round: capturing it only together with status:done could take the post-reboot
+  # id when the reboot cut the console session short, and phase 2 then waited forever
+  # for a boot_id change that had already happened)
+  info "Lese boot_id der ersten Boot-Phase über die serielle Konsole ..."
+  while [ $SECONDS -lt $deadline ] && [ -z "$boot1" ]; do
     vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)).
 Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install) - dieses Skript setzt jetzt --events on_reboot=restart (einphasig). Log: journalctl -u libvirtd."
-    console_run 'cloud-init status --wait --timeout 300; echo "BOOTID=$(cat /proc/sys/kernel/random/boot_id)"; cloud-init status' 320 >/dev/null
-    b="$(grep -o 'BOOTID=[0-9a-f-]*' "$clean" | tail -1 | cut -d= -f2)" || true
-    # boot1 = FIRST boot_id seen (28th round: taking it only together with status:done
-    # could capture the post-reboot id when the reboot cut the console session short,
-    # and phase 2 would then wait forever for a change that already happened)
-    if [ -z "$boot1" ] && [ -n "$b" ]; then boot1="$b"; fi
-    if grep -q 'status: done' "$clean" && [ -n "$boot1" ]; then break; fi
+    console_run 'cat /proc/sys/kernel/random/boot_id' 30 >/dev/null
+    b="$(tr -d '[:space:]' < "$clean" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
+    if [ -n "$b" ]; then boot1="$b"; fi
+    sleep 5
+  done
+  [ -n "$boot1" ] || die "kein Konsolen-Kontakt zur VM (Timeout). Konsole manuell: virsh --connect $LIBVIRT_URI console $VM_NAME"
+  info "boot_id erster Boot: $boot1. Warte auf cloud-init (erster Boot) ..."
+  # phase 1b: wait for cloud-init done; capture uptime then (reboot resets it, proc(5))
+  while [ $SECONDS -lt $deadline ]; do
+    vm_running || die "VM $VM_NAME ist nicht mehr running (domstate: $(virsh_cmd domstate "$VM_NAME" 2>/dev/null || true)). Log: journalctl -u libvirtd."
+    console_run 'cloud-init status --wait --timeout 300; cat /proc/uptime; cloud-init status' 320 >/dev/null
+    if grep -q 'status: done' "$clean"; then
+      up1="$(grep -oE '[0-9]+\.[0-9]+' "$clean" | head -1)" || true
+      break
+    fi
     sleep 10
   done
-  [ -n "$boot1" ] || die "cloud-init nicht fertig geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
-  info "cloud-init fertig (boot_id $boot1). Warte auf den power_state-Neustart ..."
+  grep -q 'status: done' "$clean" || die "cloud-init nicht fertig geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
+  info "cloud-init fertig (uptime bei done: ${up1:-?}s). Warte auf den power_state-Neustart ..."
   local reboot_deadline=$((SECONDS + 900))
-  local rebooted=0
+  local rebooted=0 polls=0
   while [ $SECONDS -lt $reboot_deadline ]; do
     if ! vm_running; then
       info "VM ist während des power_state-Neustarts ausgegangen - starte neu (virsh start; die persistente XML trägt on_reboot=restart)."
       virsh_cmd start "$VM_NAME" || die "virsh start fehlgeschlagen"
     fi
-    console_run 'cat /proc/sys/kernel/random/boot_id' 30 >/dev/null
+    console_run 'cat /proc/sys/kernel/random/boot_id; cat /proc/uptime' 30 >/dev/null
     b="$(tr -d '[:space:]' < "$clean" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)" || true
+    u="$(grep -oE '[0-9]+\.[0-9]+' "$clean" | head -1)" || true
+    # reboot detected by boot_id change (kernel sysctl) OR by uptime drop below the
+    # value captured at cloud-init-done (proc(5) /proc/uptime; a reboot resets it)
     if [ -n "$b" ] && [ "$b" != "$boot1" ]; then rebooted=1; break; fi
+    if [ -n "$u" ] && [ -n "$up1" ]; then
+      if awk -v a="$u" -v c="$up1" 'BEGIN{exit !(a+10<c)}'; then rebooted=1; break; fi
+    fi
+    polls=$((polls + 1))
+    if [ $((polls % 4)) -eq 0 ]; then
+      info "noch kein Neustart erkannt (boot_id=${b:-?}, uptime=${u:-?}s, uptime-bei-done=${up1:-?}) ..."
+    fi
     sleep 15
   done
   if [ "$rebooted" -eq 1 ]; then

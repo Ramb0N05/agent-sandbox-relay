@@ -1,7 +1,7 @@
 # agent-sandbox-relay
 
 Job-Queue-Service (Docker-Service-Name: agent-sandbox-relay) für die
-sandbox-worker-VM. Referenz-Doku: Canvas "sandbox-worker-vm", Abschnitt 10.5
+sandbox-worker-VM. Referenz-Doku: Canvas "agent-sandbox-relay", Abschnitt 10.5
 (Transportoption E: Pull-Agent mit Job-Queue auf dem Hetzner-Server);
 Dateitransfer: Abschnitt 10.8.
 

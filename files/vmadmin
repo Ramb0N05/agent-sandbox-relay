@@ -19,11 +19,13 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 PORT = 80
 ADMIN_USERNAME = "admin"
 CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "agent-sandbox")
 TOKEN_FILE = os.path.join(CONF_DIR, "worker-token")
+ENDPOINT_FILE = os.path.join(CONF_DIR, "endpoint")
 ADMIN_HASH_FILE = os.path.join(CONF_DIR, "admin-hash")
 TTYD_UNIT_PATH = "/etc/systemd/system/ttyd-worker.service"
 AGENT_SERVICE = "agent-sandbox-agent"
@@ -54,6 +56,17 @@ def validate_token(tok):
     # worker token: ASCII, no whitespace, 8-128 chars (the relay issues 32-byte urlsafe)
     return isinstance(tok, str) and tok.isascii() and 8 <= len(tok) <= 128 \
         and tok == tok.strip() and not any(c.isspace() for c in tok)
+
+
+def validate_endpoint(ep):
+    # relay endpoint: https URL, ASCII, no whitespace, 8-200 chars, host required
+    # (21st round: vm-install.sh --domain optional, the endpoint lands here instead)
+    if not (isinstance(ep, str) and ep.isascii() and 8 <= len(ep) <= 200
+            and ep == ep.strip() and not any(c.isspace() for c in ep)):
+        return False
+    if not ep.startswith("https://") or len(ep) <= len("https://"):
+        return False
+    return urlsplit(ep).hostname is not None
 
 
 def validate_ttyd_pw(pw):
@@ -139,6 +152,14 @@ def read_state():
             tok_mask = {"laenge": len(t), "ende": t[-4:] if len(t) >= 4 else t}
     except OSError:
         pass
+    endpoint = None
+    try:
+        with open(ENDPOINT_FILE, encoding="utf-8") as f:
+            e = f.read().strip()
+        if e:
+            endpoint = e
+    except OSError:
+        pass
     agent = run(["systemctl", "is-active", AGENT_SERVICE])
     ttyd = run(["systemctl", "is-active", TTYD_SERVICE])
     return {
@@ -151,6 +172,7 @@ def read_state():
         "agent": agent.stdout.strip() or "unbekannt",
         "ttyd": ttyd.stdout.strip() or "unbekannt",
         "token_mask": tok_mask,
+        "endpoint": endpoint,
     }
 
 
@@ -332,6 +354,14 @@ label.field input{width:100%}
 </section>
 
 <section class="page" id="page-einstellungen">
+  <h2>Relay-Endpoint <span class="muted">(Adresse des Relay-Servers)</span></h2>
+  <div class="card">
+    <p class="muted" id="ep-cur">aktuelles Endpoint: -</p>
+    <label class="field">Neues Relay-Endpoint (https://...)
+      <input id="ep" type="text" placeholder="https://..." autocomplete="off"></label>
+    <div class="row"><button class="primary" id="btn-ep">Endpoint speichern (Agent startet neu)</button></div>
+    <p class="muted">Ohne diese Karte bleibt der Platzhalter aus der cloud-init-Konfiguration aktiv. Der Agent liest das Endpoint nur beim Start, deshalb der Neustart.</p>
+  </div>
   <h2>Worker-Token <span class="muted">(Relay-Anmeldung des Agenten)</span></h2>
   <div class="card">
     <p class="muted" id="token-mask">aktuelles Token: -</p>
@@ -495,7 +525,19 @@ async function refreshStatus(){
   document.getElementById("token-mask").textContent = d.token_mask
     ? "aktuelles Token: " + d.token_mask.laenge + " Zeichen, endet auf ..." + d.token_mask.ende
     : "aktuelles Token: keins gesetzt";
+  document.getElementById("ep-cur").textContent = d.endpoint
+    ? "aktuelles Endpoint: " + d.endpoint
+    : "aktuelles Endpoint: keins gesetzt (Platzhalter aus der cloud-init-Konfiguration)";
   document.getElementById("status-ts").textContent = "Stand " + new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+async function saveEndpoint(){
+  var ep = document.getElementById("ep").value;
+  var ok = await showConfirm("Endpoint speichern", "Relay-Endpoint setzen und den Agent neu starten?");
+  if (!ok){ return; }
+  await api("/admin/api/endpoint", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({endpoint: ep}) });
+  document.getElementById("ep").value = "";
+  toast("Endpoint gesetzt, Agent neu gestartet");
+  refreshStatus();
 }
 async function saveToken(){
   var tok = document.getElementById("tok").value;
@@ -545,6 +587,7 @@ document.getElementById("auto").addEventListener("change", function(){
     statusTimer = setInterval(refreshStatus, 5000);
   }
 });
+document.getElementById("btn-ep").addEventListener("click", saveEndpoint);
 document.getElementById("btn-token").addEventListener("click", saveToken);
 document.getElementById("btn-ttyd").addEventListener("click", saveTtyd);
 document.getElementById("btn-pw").addEventListener("click", changePw);
@@ -647,6 +690,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(422, {"error": "Token ungültig (8-128 ASCII-Zeichen, ohne Whitespace)"})
                     return
                 write_atomic(TOKEN_FILE, data["token"] + "\n")
+                r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
+                self._send_json(200 if r.returncode == 0 else 500,
+                                {"ok": r.returncode == 0, "restart": r.stdout.strip() or r.stderr.strip() or "ok"})
+                return
+            if self.path == "/admin/api/endpoint" and "endpoint" in data:
+                if not validate_endpoint(data["endpoint"]):
+                    self._send_json(422, {"error": "Endpoint ungültig (https://-URL, 8-200 ASCII-Zeichen, ohne Whitespace)"})
+                    return
+                write_atomic(ENDPOINT_FILE, data["endpoint"] + "\n")
                 r = run(["systemctl", "restart", AGENT_SERVICE], sudo=True)
                 self._send_json(200 if r.returncode == 0 else 500,
                                 {"ok": r.returncode == 0, "restart": r.stdout.strip() or r.stderr.strip() or "ok"})

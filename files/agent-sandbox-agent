@@ -15,9 +15,15 @@ from urllib.parse import urlsplit
 
 # worker token: file before constant (vmadmin writes /home/worker/.config/agent-sandbox/worker-token,
 # then systemctl restart agent-sandbox-agent - the token is only read at startup).
+# 21st round: same pattern for the relay endpoint (vmadmin POST endpoint, --domain
+# in vm-install.sh optional; without file/parameter the placeholder stays).
 TOKEN_FILE = os.environ.get(
     "AGENT_SANDBOX_TOKEN_FILE",
     "/home/worker/.config/agent-sandbox/worker-token",
+)
+ENDPOINT_FILE = os.environ.get(
+    "AGENT_SANDBOX_ENDPOINT_FILE",
+    "/home/worker/.config/agent-sandbox/endpoint",
 )
 
 
@@ -32,8 +38,19 @@ def _load_token():
     return "<agent-sandbox-relay-worker-token>"
 
 
+def _load_endpoint():
+    try:
+        with open(ENDPOINT_FILE, encoding="utf-8") as f:
+            e = f.read().strip()
+        if e:
+            return e
+    except OSError:
+        pass
+    return "https://<agent-sandbox-relay-domain>"
+
+
 TOKEN = _load_token()
-ENDPOINT = "https://<agent-sandbox-relay-domain>"
+ENDPOINT = _load_endpoint()
 POLL_TIMEOUT = 310  # client cap just above the server-side long poll (300 s)
 CMAX = 900  # execution cap per job (seconds)
 OUTMAX = 8 * 1024 * 1024  # output cap 8 MiB (section 10.7)
@@ -140,17 +157,18 @@ def run_cmd(cmd):
 
 
 def execute(cmd, relay):
-    # prefixes VIBE_FETCH (file into the VM) and VIBE_SEND (file out of the VM), else shell job
-    if cmd.startswith("VIBE_FETCH ") and len(cmd.split(" ", 2)) == 3:
+    # prefixes FETCH (file into the VM) and SEND (file out of the VM), else shell job
+    # (21st round: prefix rename; the server treats cmd as opaque)
+    if cmd.startswith("FETCH ") and len(cmd.split(" ", 2)) == 3:
         _, fid, target = cmd.split(" ", 2)
         rc = relay.fetch_file(fid, target)
-        return rc, "VIBE_FETCH id=%s target=%s rc=%d" % (fid, target, rc)
-    if cmd.startswith("VIBE_SEND ") and len(cmd.split(" ", 1)) == 2:
+        return rc, "FETCH id=%s target=%s rc=%d" % (fid, target, rc)
+    if cmd.startswith("SEND ") and len(cmd.split(" ", 1)) == 2:
         _, path = cmd.split(" ", 1)
         rc, info = relay.send_file(path)
         if rc != 0 or not info:
-            return (rc if rc else 1), "VIBE_SEND fehlgeschlagen rc=%d" % rc
-        return 0, "VIBE_SEND id=%s size=%d" % (info["id"], info["size"])
+            return (rc if rc else 1), "SEND fehlgeschlagen rc=%d" % rc
+        return 0, "SEND id=%s size=%d" % (info["id"], info["size"])
     return run_cmd(cmd)
 
 

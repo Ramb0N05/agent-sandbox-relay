@@ -1,9 +1,12 @@
 #!/bin/bash
-# vm-install.sh - install or update the sandbox-worker VM on the local libvirt host (20th round).
+# vm-install.sh - install or update the sandbox-worker VM on the local libvirt host (21st round).
 # Install (VM does not exist): fetches the current worker-branch files from the public
-# GitHub repo, replaces the three user-data placeholders, generates the initial
+# GitHub repo, replaces the user-data placeholders, generates the initial
 # passwords, renders the user-data into a temporary directory (nothing is written
-# to /root), runs virt-install and prints the initial values.
+# to /root), runs virt-install and prints the initial values. --domain is optional:
+# without it the endpoint placeholder stays and the relay endpoint is set after
+# the boot via the vmadmin UI (21st round, agent reads the endpoint file first).
+# The VM reboots itself once after cloud-init finished (power_state, once-per-instance).
 # Update (VM exists): VM data stays untouched - worker-token file, admin-hash and the
 # ttyd unit (which carries the ttyd password in ExecStart) are kept; the program files
 # and units ship through the relay job queue (documented deployment path, 15th round)
@@ -85,8 +88,10 @@ vm-install.sh - sandbox-worker-VM anlegen oder aktualisieren
   --vcpus N             vCPUs (Default: 4)
   --user-data PATH      optional: gerenderte user-data zusätzlich unter PATH ablegen
                          (Default: nur temporär im Skript-Verzeichnis, nichts in /root)
-  --domain URL          Relay-Endpoint (Installation: Pflicht; Update: Pflicht, falls der
-                         Agent noch den Platzhalter enthält)
+  --domain URL          Relay-Endpoint (optional; ohne Angabe bleibt der Platzhalter
+                         in der Konfiguration, das Endpoint lässt sich nach dem Boot
+                         über die vmadmin-UI setzen; beim Update übernimmt das Skript
+                         den laufenden Endpoint der VM, falls konfiguriert)
   --worker-token TOKEN  Worker-Token für die Erstinstallation (optional; sonst nach dem
                          Boot über die vmadmin-UI setzen, der Agent läuft solange mit dem
                          Konstanten-Fallback und bekommt 401)
@@ -176,18 +181,30 @@ fetch_repo_files() {
 
 render_user_data() {
   # three placeholders; the worker-token fallback constant stays untouched on purpose
-  [ -n "$DOMAIN" ] || die "Installation braucht --domain (Relay-Endpoint, z. B. https://sandbox-relay.example)"
+  # 21st round: --domain optional - without it the endpoint placeholder stays in the
+  # user-data and the relay endpoint is set via vmadmin after the boot
   [ -n "$TTYD_PW" ] || TTYD_PW="$(gen_password)"
   [ -n "$ADMIN_PW" ] || ADMIN_PW="$(gen_password)"
   local ud
   ud="$(cat "$WORKDIR/cloud-init_sandbox-worker-user-data.yaml")"
-  ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
+  if [ -n "$DOMAIN" ]; then
+    ud="${ud//<agent-sandbox-relay-domain>/$DOMAIN}"
+  fi
   ud="${ud//<ttyd-passwort>/$TTYD_PW}"
   ud="${ud//<vm-admin-passwort>/$ADMIN_PW}"
   case "$ud" in
-    *"<agent-sandbox-relay-domain>"*|*"<ttyd-passwort>"*|*"<vm-admin-passwort>"*)
+    *"<ttyd-passwort>"*|*"<vm-admin-passwort>"*)
       die "Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;
   esac
+  if [ -n "$DOMAIN" ]; then
+    case "$ud" in
+      *"<agent-sandbox-relay-domain>"*)
+        die "Domain-Platzhalter nach der Ersetzung noch vorhanden (unerwarteter Repo-Stand)" ;;
+    esac
+  else
+    info "Hinweis: kein --domain angegeben - Relay-Endpoint nach dem Boot über die"
+    info "vmadmin-UI setzen (Karte Relay-Endpoint; Agent liest die Endpoint-Datei beim Start)."
+  fi
   # the temp copy is what virt-install gets; --user-data only adds a persistent copy
   printf '%s' "$ud" > "$WORKDIR/user-data.rendered"
   chmod 600 "$WORKDIR/user-data.rendered"
@@ -208,7 +225,6 @@ render_user_data() {
 }
 
 install_vm() {
-  [ -n "$DOMAIN" ] || die "--domain fehlt (siehe --help)"
   render_user_data
   if [ "$DRY_RUN" -eq 1 ]; then
     # a dry run must not require host resources (no backing image, no libvirt)
@@ -290,6 +306,11 @@ print_initial_values() {
   else
     info "Worker-Token:       nicht gesetzt - über die vmadmin-UI setzen (Karte Einstellungen)"
   fi
+  if [ -n "$DOMAIN" ]; then
+    info "Relay-Endpoint:     $DOMAIN (in der user-data gesetzt)"
+  else
+    info "Relay-Endpoint:     Platzhalter - über die vmadmin-UI setzen (Karte Relay-Endpoint)"
+  fi
   info "Konsole:             virsh --connect $LIBVIRT_URI console $VM_NAME (Autologin $VM_USER)"
   info "==============================================================="
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -356,7 +377,7 @@ ship_file() {
     -H "Authorization: Bearer $SUBMIT" -H "Content-Type: application/octet-stream" \
     --data-binary "@$local_file" | jq -r '.id')" \
     || die "Upload fehlgeschlagen: $vmname"
-  run_job "VIBE_FETCH $vmname" "VIBE_FETCH $fid /home/$VM_USER/.vm-update/$vmname"
+  run_job "FETCH $vmname" "FETCH $fid /home/$VM_USER/.vm-update/$vmname"
   run_job "install $vmname" "sudo install -o $owner -g $owner -m $mode /home/$VM_USER/.vm-update/$vmname $target"
 }
 
@@ -423,18 +444,41 @@ EOF
 
 render_agent() {
   # agent file: replace the placeholder endpoint only if it is still in there
+  # 21st round: --domain optional - without it the placeholder stays; the agent
+  # reads the endpoint file first (written by vmadmin POST /admin/api/endpoint)
   local agent="$WORKDIR/files_agent-sandbox-agent"
   if grep -q '<agent-sandbox-relay-domain>' "$agent"; then
-    [ -n "$DOMAIN" ] || die "Der Agent enthält noch den Domain-Platzhalter (Fehler der 15. Runde); --domain ist für das Update Pflicht."
-    local content
-    content="$(cat "$agent")"
-    content="${content//<agent-sandbox-relay-domain>/$DOMAIN}"
-    printf '%s' "$content" > "$WORKDIR/agent.rendered"
-    info "Domain-Platzhalter im Agent ersetzt (Endpoint $DOMAIN)."
+    if [ -n "$DOMAIN" ]; then
+      local content
+      content="$(cat "$agent")"
+      content="${content//<agent-sandbox-relay-domain>/$DOMAIN}"
+      printf '%s' "$content" > "$WORKDIR/agent.rendered"
+      info "Domain-Platzhalter im Agent ersetzt (Endpoint $DOMAIN)."
+    else
+      cp "$agent" "$WORKDIR/agent.rendered"
+      info "Kein --domain und kein laufender Endpoint in der VM - Platzhalter bleibt."
+      info "Relay-Endpoint über die vmadmin-UI setzen (Karte Relay-Endpoint); der"
+      info "Agent liest die Endpoint-Datei beim Start."
+    fi
   else
     cp "$agent" "$WORKDIR/agent.rendered"
     info "Agent enthält bereits eine echte Domain - bleibt unberührt (Initialwert)."
   fi
+}
+
+vm_current_endpoint() {
+  # reads the running endpoint from the VM (endpoint file first, then the ENDPOINT
+  # constant of the installed agent); empty output = only the placeholder is set
+  local cmd id out ep
+  cmd="cat /home/$VM_USER/.config/agent-sandbox/endpoint 2>/dev/null || sed -n 's/^ENDPOINT = \"\\(.*\\)\"$/\\1/p' /usr/local/bin/agent-sandbox-agent"
+  id="$(queue_job "$cmd")"
+  out="$(wait_job "$id")"
+  [ "${out%% *}" = "done" ] && [ "${out##* }" = "0" ] || return 0
+  ep="$(job_output "$id" | tr -d '\n')"
+  case "$ep" in
+    ""|*"<agent-sandbox-relay-domain>"*) return 0 ;;
+  esac
+  printf '%s' "$ep"
 }
 
 update_vm() {
@@ -444,7 +488,6 @@ update_vm() {
     die "VM ist nicht gestartet (Zustand: ${state:-unbekannt}). Erst starten:
   virsh --connect $LIBVIRT_URI start $VM_NAME"
   fi
-  render_agent
 
   if [ -z "$RELAY" ] || [ -z "$SUBMIT" ]; then
     info "--relay/--submitter-token fehlen - kein Update über die Job-Queue möglich."
@@ -459,6 +502,16 @@ update_vm() {
     exit 3
   fi
   check_vm_user
+  if [ -z "$DOMAIN" ]; then
+    # 21st round: keep the running endpoint when --domain is not given
+    local cur_ep
+    cur_ep="$(vm_current_endpoint)"
+    if [ -n "$cur_ep" ]; then
+      DOMAIN="$cur_ep"
+      info "Laufender Relay-Endpoint aus der VM übernommen: $DOMAIN"
+    fi
+  fi
+  render_agent
   run_job "Update-Verzeichnis" "mkdir -p /home/$VM_USER/.vm-update"
 
   # 1) vmadmin (runs as $VM_USER, port 80) - restart after install

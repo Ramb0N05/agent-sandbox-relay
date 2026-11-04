@@ -1,7 +1,7 @@
 # agent-sandbox-relay - Branch worker (VM-Seite)
 
 Dieser Branch enthält die VM-seitigen Dateien der sandbox-worker-VM
-(Canonical-Doku: Canvas "vibe-sandbox-vm"). Branch main enthält die
+(Canonical-Doku: Canvas "sandbox-worker-vm"). Branch main enthält die
 Server-Seite (Queue-Service agent-sandbox-relay: Dockerfile,
 agent_sandbox_relay.py, README.md). Der Branch enthält nur die
 VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
@@ -15,7 +15,10 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   cc_ssh-Modul (leere Liste statt Default rsa/ecdsa/ed25519), runcmd
   deinstalliert openssh per pacman -Rns --noconfirm und löscht die
   generierten Host-Keys (das cloud-init packages-Modul kann nur
-  installieren, keine Pakete entfernen). vm/vm-install.sh rendert sie
+  installieren, keine Pakete entfernen). power_state (mode: reboot,
+  delay: now) startet die VM nach Abschluss aller cloud-init-Module
+  einmal selbst neu (cc_power_state_change, Frequenz once-per-instance,
+  deshalb kein Reboot bei jedem Boot). vm/vm-install.sh rendert sie
   beim Anlegen nur temporär (Abschnitt unten); virt-install hängt sie
   als NoCloud-ISO nur beim ersten Boot an.
 - files/agent-sandbox-agent: Pull-Agent (elfte Runde: Python statt bash;
@@ -23,8 +26,13 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   Reconnect-Retry je Aufruf statt einem curl-Prozess je Request, kein
   Leerlauf-Sleep - /jobs/next blockiert serverseitig, sleep 1 nur im
   Fehlerfall; Ausführung mit timeout 900 bash -lc als User worker,
-  Präfixe VIBE_FETCH und VIBE_SEND für den Datei-Transport über die
-  Files-Endpunkte; ssl-Default-Kontext mit Zertifikatsprüfung).
+  Präfixe FETCH und SEND für den Datei-Transport über die
+  Files-Endpunkte (einundzwanzigste Runde: vorher VIBE_FETCH/VIBE_SEND,
+  der Server behandelt cmd als opak); ssl-Default-Kontext mit
+  Zertifikatsprüfung; Token und Endpoint liest der Agent beim Start aus
+  Dateien (/home/worker/.config/agent-sandbox/worker-token bzw. endpoint,
+  schreibbar über die vmadmin-UI), Fallback sind die Platzhalter-
+  Konstanten).
   Installationsziel in der VM: /usr/local/bin/agent-sandbox-agent, owner
   worker:worker, 0700. Normalfall ist die Provisionierung über die
   cloud-init-Datei (Paket python3 in der Paketliste); die Einzeldatei ist
@@ -43,10 +51,14 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   brauchen sonst root; CapabilityBoundingSet schneidet weitere Caps ab,
   NoNewPrivileges entfällt, weil vmadmin sudo für systemctl/journalctl
   benutzt). Funktionen: Status (Hostname, Kernel, Uptime, Last, RAM- und
-  Disk-Belegung als Balken, Dienst-Zustände, Token-Maske), Worker-Token
-  setzen (8-128 ASCII ohne Whitespace, atomar nach
+  Disk-Belegung als Balken, Dienst-Zustände, Token-Maske, Endpoint),
+  Worker-Token setzen (8-128 ASCII ohne Whitespace, atomar nach
   /home/worker/.config/agent-sandbox/worker-token, danach Neustart des
-  Agents, weil der das Token nur beim Start liest), ttyd-Passwort setzen
+  Agents, weil der das Token nur beim Start liest), Relay-Endpoint setzen
+  (https-URL mit Host, 8-200 ASCII-Zeichen ohne Whitespace, atomar nach
+  /home/worker/.config/agent-sandbox/endpoint, danach Neustart des
+  Agents; ohne Datei bleibt der Platzhalter aus der cloud-init-Konfiguration
+  aktiv), ttyd-Passwort setzen
   (1-64 druckbare ASCII ohne Doppelpunkt und Whitespace - ttyd kennt nur
   -c user:password und kein Credential-File; die Unit wird neu geschrieben,
   daemon-reload und Neustart), eigenes Admin-Passwort ändern (sha256-Hash
@@ -86,7 +98,10 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   arbeitet das Legacy-Token aus AGENT_SANDBOX_RELAY_TOKEN im Docker-Stack
   als Worker- und Submit-Token weiter (Migration beim Serverstart).
 - <agent-sandbox-relay-domain> in cloud-init und files/agent-sandbox-agent:
-  Subdomain des Queue-Services (ENDPOINT des Agenten).
+  Subdomain des Queue-Services (ENDPOINT des Agenten). Seit der
+  einundzwanzigsten Runde optional: ohne Ersetzung bleibt der Platzhalter
+  als Fallback-Konstante, das echte Endpoint wird nach dem Boot über die
+  vmadmin-UI gesetzt (Datei geht der Konstante vor).
 - <ttyd-passwort> in cloud-init und files/ttyd-worker.service: Basic-Auth-
   Passwort des Web-Terminals.
 - <vm-admin-passwort> in cloud-init (nur runcmd): Anfangs-Passwort der
@@ -103,16 +118,16 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - Programmatisch (beide Richtungen) über die Files-Endpunkte des Relays
   (je Datei maximal 8 MiB roh; der Server speichert gzip+base64-kodiert
   und wandelt beim Auslesen in Rohbytes zurück):
-  - VM -> Absender: Job cmd "VIBE_SEND <pfad>"; das Result enthält
-    "VIBE_SEND id=<id>"; der Absender holt die Rohbytes mit
+  - VM -> Absender: Job cmd "SEND <pfad>"; das Result enthält
+    "SEND id=<id>"; der Absender holt die Rohbytes mit
     GET /files/<id>.
   - Absender -> VM: POST /files mit Rohbytes liefert die id; danach Job
-    cmd "VIBE_FETCH <id> <zielpfad>".
+    cmd "FETCH <id> <zielpfad>".
 - Fallback ohne Datei-Endpunkte: Job cmd "base64 -w0 <datei>" (oder
   "gzip -c <datei> | base64 -w0"), Output im Result ist der Base64-Text
   (Deckel 8 MiB).
 
-## VM anlegen oder aktualisieren (vm/vm-install.sh, zwanzigste Runde)
+## VM anlegen oder aktualisieren (vm/vm-install.sh, einundzwanzigste Runde)
 
 Alle Pfade sind Parameter mit dokumentierten Defaults, kein Projektpfad
 im Skript: --vm-name (sandbox-worker), --connect (qemu:///system), --disk
@@ -125,7 +140,9 @@ den QEMU-Laufzeitbenutzer lesbar sein), --disk-gb (64), --memory (8192),
 temporär im Skript-Tempverzeichnis, nichts unter /root; mit Angabe wird
 eine zusätzliche dauerhafte Kopie unter dem Pfad abgelegt), --raw-base
 (raw.githubusercontent.com, Branch worker). Weitere Optionen: --domain
-(Relay-Endpoint), --worker-token, --ttyd-password, --admin-password,
+(Relay-Endpoint, optional - ohne Angabe bleibt der Platzhalter in der
+user-data und das Endpoint wird nach dem Boot über die vmadmin-UI
+gesetzt), --worker-token, --ttyd-password, --admin-password,
 --relay, --submitter-token, --recreate, --yes, --dry-run.
 
 Ohne Root lauffähig: Der Zugang läuft über den libvirt-Socket (Mitglieder
@@ -146,26 +163,31 @@ als Fallback.
 
 Installation (VM existiert nicht): fetch der user-data, des Agenten, von
 vmadmin und der Units vom aktuellen worker-Zweig; Ersetzen von
-<agent-sandbox-relay-domain>, <ttyd-passwort> und <vm-admin-passwort>
+<agent-sandbox-relay-domain> (nur mit --domain, sonst bleibt der
+Platzhalter), <ttyd-passwort> und <vm-admin-passwort>
 (ohne Angabe generiert, 24 alphanumerische Zeichen aus /dev/urandom).
 Danach virt-install (plus --noautoconsole, virt-install(1)), Warteschleife
 bis 120 s auf die DHCP-Lease (virsh net-dhcp-leases default <mac>; die
 Lease-Tabelle druckt nach dem Header eine Trennlinie, das Skript matcht
 die MAC-Zeile statt eine Zeilennummer zu raten - libvirt vsh-table.c) und
 Ausgabe der Initialwerte in der Shell (IP, Passwörter, Konsole-Hinweis,
-Autologin worker). Ohne --worker-token läuft der Agent mit dem
-Konstanten-Fallback (401 auf der Queue); das Token wird nach dem Boot
-über die vmadmin-UI gesetzt (Datei geht der Konstante vor).
+Autologin worker). Die VM startet nach Abschluss von cloud-init einmal
+selbst neu (power_state, einmalig pro Instanz). Ohne --worker-token läuft
+der Agent mit dem Konstanten-Fallback (401 auf der Queue); das Token wird
+nach dem Boot über die vmadmin-UI gesetzt (Datei geht der Konstante vor).
 
 Update (VM existiert, ohne --recreate): keine VM-Daten werden verändert.
-Voraussetzungen: --domain, falls der Agent noch den Platzhalter enthält
-(Fehler der fünfzehnten Runde, wird dabei behoben), außerdem --relay und
---submitter-token für den Queue-Weg (das Skript ist Absender: POST /jobs
-und POST /files gehören zur Submitter-Rolle; das Worker-Token gehört zum
-Agenten in der VM und verlässt sie nie). Ablauf: Lebensprobe (echo
+Voraussetzungen: --relay und --submitter-token für den Queue-Weg (das
+Skript ist Absender: POST /jobs und POST /files gehören zur
+Submitter-Rolle; das Worker-Token gehört zum Agenten in der VM und
+verlässt sie nie). --domain ist optional: fehlt es, liest das Skript den
+laufenden Endpoint der VM (Endpoint-Datei vor ENDPOINT-Konstante des
+installierten Agenten) und rendert den neuen Agent damit; ist auch dort
+nur der Platzhalter konfiguriert, bleibt der Platzhalter im Agent und
+das Endpoint wird über die vmadmin-UI gesetzt. Ablauf: Lebensprobe (echo
 vm-install-probe), Prüfung des VM-Benutzers (Job id -un muss worker
 liefern - eine VM der alten Bereitstellung wird abgewiesen), dann je
-Datei POST /files -> Job VIBE_FETCH nach /home/worker/.vm-update/ ->
+Datei POST /files -> Job FETCH nach /home/worker/.vm-update/ ->
 sudo install (vmadmin und Agent als worker:worker 0700, Units als
 root:root 0644, den Defaults von cloud-init write_files entsprechend),
 daemon-reload, vmadmin-Neustart; die ttyd-Unit wird nur mit

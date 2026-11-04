@@ -18,6 +18,10 @@
 # XML; _create_guest starts the live domain with that initial XML). The power_state
 # reboot then destroyed the VM (observed in the 26th round). Single-phase --import keeps
 # live == persistent == final XML with our --events values (virt-install(1) --events).
+# Readiness wait (install) polls the vmadmin API in the VM (GET /admin/api/state,
+# Basic auth) - the serial console is a single session and a parallel virt-manager
+# console view breaks console-based polling ("Active console session exists", 30th
+# round) - with the console path as fallback.
 # Update (VM exists): exclusively over the VM serial console (virsh console --force
 # --safe, autologin worker via serial-getty@ttyS0 with agetty --autologin, agetty(8));
 # the VM downloads the current files itself from the public repo into /tmp/vm-update
@@ -83,6 +87,7 @@ ORIG_ARGS=()
 CONSOLE_RC=""
 SEED_ISO=""
 SELF_PATH=""   # absolute path of $0, resolved in main (used by the self-update)
+VM_IP=""       # set by wait_vm_ready_api (DHCP lease of the VM)
 
 # repo files fetched to the VM (name in repo); all downloads stay in the temp dir
 
@@ -454,6 +459,81 @@ Ursache z.B. on_reboot=destroy in der Live-XML (virt-install-Zweiphasen-Install)
   die "VM nicht einsatzbereit geworden (Timeout). Konsole: virsh --connect $LIBVIRT_URI console $VM_NAME"
 }
 
+wait_vm_ready_api() {
+  # Polls the vmadmin API INSIDE the VM (GET /admin/api/state, Basic admin) instead of
+  # the serial console for the readiness wait. Reason (30th round): the serial console
+  # is a SINGLE session - a parallel virt-manager console view makes virsh console fail
+  # with "Active console session exists for this domain" or the two sessions kick each
+  # other (--force), so console-based polling is unreliable. The host reaches the guest
+  # IP directly on the libvirt default NAT network (virbr0; libvirt adds iptables ACCEPT
+  # rules for virbr0 INPUT/FORWARD - libvirt firewall/networking docs).
+  # Returns 0 when ready, 1 when the API path failed (caller falls back to console).
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local ip="" tries=0
+  while [ $tries -lt 24 ]; do
+    vm_running || return 1
+    ip="$(vm_ip)"
+    if [ -n "$ip" ]; then break; fi
+    sleep 5
+    tries=$((tries + 1))
+  done
+  [ -n "$ip" ] || return 1
+  VM_IP="$ip"
+  local url="http://$ip/admin/api/state" auth="admin:$ADMIN_PW"
+  info "VM-IP $ip - polle $url (vmadmin-API) ..."
+  local deadline=$((SECONDS + 1200))
+  local st="" tsv="" boot_first="" up_first=""
+  # phase 1: first API answer -> record boot_id + uptime (vm-admin starts in cloud-init
+  # final, so the first answer is normally still the FIRST boot, pre power_state reboot)
+  while [ $SECONDS -lt $deadline ]; do
+    vm_running || return 1
+    st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
+    if [ -n "$st" ]; then
+      tsv="$(printf '%s' "$st" | jq -r '[.boot_id // "", (.uptime_s|tostring)] | @tsv')" || true
+      IFS=$'\t' read -r boot_first up_first <<< "$tsv"
+      break
+    fi
+    sleep 10
+  done
+  [ -n "$boot_first" ] || return 1
+  info "vmadmin-API erreichbar (boot_id $boot_first, uptime ${up_first}s). Warte auf cloud-init done + power_state-Neustart + aktive Units ..."
+  local rebooted=0 ready=0 polls=0 grace=$((SECONDS + 240))
+  local bid="" up="" ci="" u_agent="" u_vm="" u_ttyd="" sysr=""
+  while [ $SECONDS -lt $deadline ]; do
+    vm_running || return 1
+    st="$(curl -fsS --max-time 10 -u "$auth" "$url" 2>/dev/null)" || true
+    if [ -n "$st" ]; then
+      tsv="$(printf '%s' "$st" | jq -r '[.boot_id // "", (.uptime_s|tostring), (.cloud_init // ""), (.agent // ""), (.vm_admin // ""), (.ttyd // ""), (.system_running // "")] | @tsv')" || true
+      IFS=$'\t' read -r bid up ci u_agent u_vm u_ttyd sysr <<< "$tsv"
+      if [ -n "$bid" ] && [ "$bid" != "$boot_first" ]; then rebooted=1; fi
+      if [ -n "$up" ] && [ -n "$up_first" ]; then
+        if awk -v a="$up" -v c="$up_first" 'BEGIN{exit !(a+10<c)}'; then rebooted=1; fi
+      fi
+      if [[ "$ci" == *done* ]] && [ "$u_agent" = "active" ] && [ "$u_vm" = "active" ] && [ "$u_ttyd" = "active" ] \
+         && { [ "$sysr" = "running" ] || [ "$sysr" = "degraded" ]; }; then
+        ready=1
+      fi
+      if [ "$rebooted" -eq 1 ] && [ "$ready" -eq 1 ]; then
+        info "VM nach dem power_state-Neustart einsatzbereit (boot_id $bid, cloud-init done, agent/vm-admin/ttyd aktiv)."
+        return 0
+      fi
+      # safety net: if the reboot already happened before the first API answer, no
+      # boot_id change will ever come - but the API says ready; accept after grace
+      if [ "$rebooted" -eq 0 ] && [ "$ready" -eq 1 ] && [ "$SECONDS" -gt "$grace" ]; then
+        info "WARNUNG: kein boot_id-Wechsel erkannt, aber API meldet ready seit >240 s - Neustart war vermutlich schon vor dem ersten API-Poll passiert; fahre fort."
+        return 0
+      fi
+    fi
+    polls=$((polls + 1))
+    if [ $((polls % 6)) -eq 0 ]; then
+      info "Poll $polls: boot_id=${bid:-?} uptime=${up:-?}s cloud_init=${ci:-?} agent=${u_agent:-?} vm_admin=${u_vm:-?} ttyd=${u_ttyd:-?} system=${sysr:-?} rebooted=$rebooted ready=$ready"
+    fi
+    sleep 10
+  done
+  return 1
+}
+
 build_seed() {
   # NoCloud seed ISO built locally in the temp dir: volume label cidata with the files
   # user-data and meta-data (cloud-init NoCloud datasource docs). It contains the
@@ -535,21 +615,26 @@ ein neues Overlay. Neu anlegen mit --recreate (LÖSCHT ALLE DATEN der bestehende
     --memballoon none \
     --controller usb,model=none \
     --noautoconsole
-  info "VM angelegt. Warte bis cloud-init fertig ist und der power_state-Neustart durch ist ..."
-  wait_vm_ready
+  info "VM angelegt. Warte auf Einsatzbereitschaft: zuerst vmadmin-API-Poll (robust gegen parallele Konsolen-Sessions), Fallback serielle Konsole ..."
+  if ! wait_vm_ready_api; then
+    info "vmadmin-API-Pfad nicht erfolgreich - Fallback: Warten über die serielle Konsole."
+    wait_vm_ready
+  fi
   detach_seed
-  info "Warte auf DHCP-Lease (Netzwerk default) ..."
-  local ip=""
-  local tries=0
-  while [ $tries -lt 24 ]; do
-    ip="$(vm_ip)"
-    if [ -n "$ip" ]; then break; fi
-    sleep 5
-    tries=$((tries + 1))
-  done
+  local ip="${VM_IP:-}"
   if [ -z "$ip" ]; then
-    info "Keine DHCP-Lease innerhalb von 120 s gefunden (virsh net-dhcp-leases default)."
-    info "IP später nachschlagen: virsh net-dhcp-leases default"
+    info "Warte auf DHCP-Lease (Netzwerk default) ..."
+    local tries=0
+    while [ $tries -lt 24 ]; do
+      ip="$(vm_ip)"
+      if [ -n "$ip" ]; then break; fi
+      sleep 5
+      tries=$((tries + 1))
+    done
+    if [ -z "$ip" ]; then
+      info "Keine DHCP-Lease innerhalb von 120 s gefunden (virsh net-dhcp-leases default)."
+      info "IP später nachschlagen: virsh net-dhcp-leases default"
+    fi
   fi
   print_initial_values "$ip"
 }

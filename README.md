@@ -76,7 +76,7 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
 - vm/domain-xml-target.xml: Soll-Zustand der Device-/Feature-Sektion der
   Domain-XML (Prüfung/Nachzug per virsh edit sandbox-worker).
 - vm/vm-install.sh: Installations- und Update-Skript für den Host
-  (neunundzwanzigste Runde). Install: holt den aktuellen worker-Zweig per
+  (dreißigste Runde). Install: holt den aktuellen worker-Zweig per
   raw.githubusercontent (nur temporär in mktemp -d, per trap entfernt; dauerhaft
   bleiben nur die Images), ersetzt die drei user-data-Platzhalter,
   generiert fehlende Passwörter aus /dev/urandom (24 alphanumerische
@@ -110,7 +110,14 @@ VM-seitigen Dateien; die beim Anlegen aus main geerbten Dateien
   erste Boot-Phase ist; als zweites Signal gilt ein Uptime-Abfall gegen den
   Stand bei cloud-init-done (/proc/uptime, proc(5)); dazu frueherkennung per
   marker=[0-9] (das tty-Echo der Marker-Zeile enthaelt marker= ohne Ziffer und
-  darf den Feeder nicht frueh beenden). Image-Pfade kommen aus der libvirt-Konfig
+  darf den Feeder nicht frueh beenden). 30. Runde: Readiness-Wait pollt statt der
+  seriellen Konsole die vmadmin-API in der VM (GET /admin/api/state mit Basic-Auth;
+  read_state liefert jetzt boot_id, cloud_init, system_running, vm_admin) - der Host
+  erreicht die VM-IP direkt über virbr0 (libvirt-default-NAT). Grund: die serielle
+  Konsole ist eine EINZIGE Session; eine parallel geöffnete virt-manager-Konsole
+  macht virsh console kaputt ("Active console session exists for this domain" /
+  gegenseitiges Kicken per --force). Konsole bleibt nur Fallback und für den Update-
+  Pfad. Image-Pfade kommen aus der libvirt-Konfig
   (virsh pool-dumpxml default -> <target><path>), nicht aus einem
   hartkodierten Pfad. Update: ausschließlich über die serielle Konsole,
   KEIN Relay-API-Zugriff (keine POST /jobs, keine /files); die VM lädt

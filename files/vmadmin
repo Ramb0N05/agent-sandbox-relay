@@ -162,14 +162,27 @@ def read_state():
         pass
     agent = run(["systemctl", "is-active", AGENT_SERVICE])
     ttyd = run(["systemctl", "is-active", TTYD_SERVICE])
+    vm_admin = run(["systemctl", "is-active", "vm-admin.service"])
+    sysr = run(["systemctl", "is-system-running"])
+    boot_id = None
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+            boot_id = f.read().strip()
+    except OSError:
+        pass
+    ci = run(["cloud-init", "status"])
     return {
         "hostname": os.uname().nodename,
         "kernel": os.uname().release,
         "uptime_s": read_proc_uptime(),
+        "boot_id": boot_id,
+        "cloud_init": ci.stdout.strip() or ("error rc=%d" % ci.returncode if ci.returncode else "unbekannt"),
+        "system_running": sysr.stdout.strip() or "unbekannt",
         "load": loads,
         "ram_total": mem_total, "ram_avail": mem_avail,
         "disk_total": disk.total, "disk_used": disk.total - disk.free,
         "agent": agent.stdout.strip() or "unbekannt",
+        "vm_admin": vm_admin.stdout.strip() or "unbekannt",
         "ttyd": ttyd.stdout.strip() or "unbekannt",
         "token_mask": tok_mask,
         "endpoint": endpoint,

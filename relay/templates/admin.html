@@ -137,7 +137,7 @@ table.rwd td.cmdcell{font-size:.8rem}
 <section class="page" id="page-status">
   <h2>Status</h2>
   <div class="row">
-    <label class="row" style="gap:.35rem"><input type="checkbox" id="auto" checked> Auto-Refresh (5 s)</label>
+    <label class="row" style="gap:.35rem"><input type="checkbox" id="auto" checked> Auto-Refresh alle <input type="number" id="auto-int" min="1" max="30" value="5" style="width:4.5em"> s</label>
     <button id="btn-status-refresh">Aktualisieren</button>
     <span class="muted" id="status-ts"></span>
   </div>
@@ -477,7 +477,7 @@ function showPage(name){
   });
   if (location.hash !== "#" + name){ location.hash = "#" + name; }
   if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
-  if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, 5000); } }
+  if (name === "status"){ refreshStatus(); if (document.getElementById("auto").checked){ statusTimer = setInterval(refreshStatus, autoSecs() * 1000); } }
   if (name === "tokens"){ refreshTokens(); }
   if (name === "jobs"){ refreshJobs(); }
   if (name === "dateien"){ refreshFiles(); }
@@ -744,9 +744,29 @@ document.getElementById("btn-status-refresh").addEventListener("click", refreshS
 document.getElementById("auto").addEventListener("change", function(){
   if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
   if (document.getElementById("auto").checked && document.getElementById("page-status").classList.contains("active")){
-    statusTimer = setInterval(refreshStatus, 5000);
+    statusTimer = setInterval(refreshStatus, autoSecs() * 1000);
   }
 });
+document.getElementById("auto-int").addEventListener("change", function(){
+  if (statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+  if (document.getElementById("auto").checked && document.getElementById("page-status").classList.contains("active")){
+    statusTimer = setInterval(refreshStatus, autoSecs() * 1000);
+  }
+});
+function autoSecs(){
+  // Auto-Refresh-Intervall der Status-Seite: numeric updown, geclampt auf 1-30 s, in localStorage gehalten
+  var v = parseInt(document.getElementById("auto-int").value, 10);
+  if (isNaN(v)){ v = 5; }
+  v = Math.min(30, Math.max(1, v));
+  document.getElementById("auto-int").value = v;
+  try{ localStorage.setItem("relayadmin-auto-s", String(v)); }catch(e){}
+  return v;
+}
+(function(){
+  var s = null;
+  try{ s = localStorage.getItem("relayadmin-auto-s"); }catch(e){}
+  if (s){ var v = parseInt(s, 10); if (!isNaN(v)){ document.getElementById("auto-int").value = Math.min(30, Math.max(1, v)); } }
+})();
 document.getElementById("btn-addw").addEventListener("click", addWorker);
 document.getElementById("btn-adds").addEventListener("click", addSubmitter);
 document.getElementById("btn-jobs-refresh").addEventListener("click", refreshJobs);

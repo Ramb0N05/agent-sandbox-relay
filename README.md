@@ -306,7 +306,12 @@ Zählbasis ist die Client-IP (Remote-Adresse). Im bestehenden Stack
 terminiert Traefik selbst das TLS und zeigt direkt ins Internet, die
 Remote-Adresse ist also die echte Client-IP und die Zählung stimmt.
 
-## Optionale mTLS-Client-Zertifikate für /admin (Traefik, nicht Teil dieses Services)
+## Optionale mTLS-Client-Zertifikate für /admin (Traefik, nicht Teil dieses Services) — UNTESTED / UNSTABLE
+
+Stand 04.11.2026 (35. Runde): implementiert und per Stub-Tests geprüft (t25), aber
+**noch nicht live getestet** — das Traefik-Dynamic-Config (TLSOption clientAuth +
+passTLSClientCert) liegt serverseitig und ist noch nicht eingespielt. Bis zum
+ersten erfolgreichen Live-Test als unstabil behandeln.
 
 Ab der 35. Runde akzeptiert /admin neben dem Basic-Passwort optional ein
 mTLS-Client-Zertifikat (AGENT_SANDBOX_ADMIN_CLIENT_CERT_SHA256, s. o.;
